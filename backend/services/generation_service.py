@@ -1,14 +1,18 @@
 import os
+from pathlib import Path
+import dotenv
+
+dotenv.load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 import json
 from datetime import datetime
 from typing import List, Dict, Optional
 import logging
-from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 import torch
 from openai import OpenAI
 import requests
 from utils.model_utils import get_huggingface_model_path
+from utils.paths import GENERATION_RESULTS_DIR, workspace_relative
 from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
 from langchain_core.prompts import ChatPromptTemplate
 import time
@@ -45,13 +49,15 @@ class GenerationService:
                 "qwen3.6-plus": "qwen3.6-plus",
             },
             "deepseek": {
-                "deepseek-v3": "deepseek-chat",
-                "deepseek-r1": "deepseek-reasoner",
-            }
+                "deepseek-v4-flash": "deepseek-v4-flash",
+                "deepseek-v4-pro": "deepseek-v4-pro",
+                "deepseek-chat": "deepseek-chat",
+                "deepseek-reasoner": "deepseek-reasoner",
+            },
         }
 
         # 确保输出目录存在
-        os.makedirs("05-generation-results", exist_ok=True)
+        GENERATION_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     def _load_huggingface_model(self, model_name: str):
         """
@@ -72,7 +78,7 @@ class GenerationService:
                 model_name,
                 torch_dtype=torch.float16,
                 device_map=tensor_device,  # 自动分配GPU/CPU
-                trust_remote_code=True
+                trust_remote_code=True,
             )
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name, trust_remote_code=True
@@ -89,7 +95,7 @@ class GenerationService:
                 num_return_sequences=1,  # 生成单个序列
                 truncation=True,  # 启用输入截断
                 pad_token_id=tokenizer.eos_token_id,  # 填充token设置
-                clean_up_tokenization_spaces=False  # 保留原始分词空格
+                clean_up_tokenization_spaces=False,  # 保留原始分词空格
             )
 
             hf_pipeline = HuggingFacePipeline(pipeline=text_gen_pipeline)
@@ -101,12 +107,12 @@ class GenerationService:
             raise
 
     def _generate_with_huggingface(
-            self,
-            model_name: str,
-            query: str,
-            context: str,
-            load_model: bool,
-            max_length: int = 1024,
+        self,
+        model_name: str,
+        query: str,
+        context: str,
+        load_model: bool,
+        max_length: int = 1024,
     ) -> str:
         """
         使用HuggingFace模型生成回答
@@ -126,14 +132,16 @@ class GenerationService:
 
             # 构建提示
             # prompt = f"""请基于以下上下文回答问题。如果上下文中没有相关信息，请说明无法回答。
-            prompt = ChatPromptTemplate.from_template("""请基于上下文与回话记录回答问题。如果上下文和回话记录中没有相关信息，请直接根据问题回答。
+            prompt = ChatPromptTemplate.from_template(
+                """请基于上下文与回话记录回答问题。如果上下文和回话记录中没有相关信息，请直接根据问题回答。
                         回话记录：{history}
                         问题：{query}
 
                         上下文：
                         {context}
 
-                        回答：""")
+                        回答："""
+            )
 
             # inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
             # outputs = model.generate(
@@ -146,7 +154,9 @@ class GenerationService:
 
             # response = tokenizer.decode(outputs[0], skip_special_tokens=True)
             ts = time.time()
-            answer = self.model.invoke(prompt.format(query=query, history=self.history, context=context))
+            answer = self.model.invoke(
+                prompt.format(query=query, history=self.history, context=context)
+            )
             spent_sec = int(time.time() - ts)
             text = answer.content
             text_parts = text.split(r"<think>")
@@ -154,17 +164,17 @@ class GenerationService:
             thinkingInfo = parts[0]
             responseInfo = parts[1]
 
-            self.history += f'''
+            self.history += f"""
 用户提问：{query}
 AI回复：{responseInfo}
 
-'''
-            answer_content = f'''s:{spent_sec}
+"""
+            answer_content = f"""s:{spent_sec}
 用户提问：{query}
 AI思考过程：{thinkingInfo}
 AI回复：{responseInfo}
 
-'''
+"""
             # return answer.split("回答：")[-1].strip()
             return answer_content
 
@@ -173,11 +183,7 @@ AI回复：{responseInfo}
             raise
 
     def _generate_with_aliyun(
-            self,
-            model_name: str,
-            query: str,
-            context: str,
-            api_key: Optional[str] = None
+        self, model_name: str, query: str, context: str, api_key: Optional[str] = None
     ) -> str:
         """
         使用OpenAI API生成回答
@@ -202,9 +208,11 @@ AI回复：{responseInfo}
             # client = OpenAI(api_key=api_key)
 
             messages = [
-                {"role": "system",
-                 "content": "You are a helpful assistant. Use the provided context to answer the question."},
-                {"role": "user", "content": f"Context: {context}\n\nQuestion: {query}"}
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant. Use the provided context to answer the question.",
+                },
+                {"role": "user", "content": f"Context: {context}\n\nQuestion: {query}"},
             ]
 
             completion = client.chat.completions.create(
@@ -213,9 +221,7 @@ AI回复：{responseInfo}
                 # 通过 extra_body 设置 enable_thinking 开启思考模式
                 extra_body={"enable_thinking": True},
                 stream=True,
-                stream_options={
-                    "include_usage": True
-                },
+                stream_options={"include_usage": True},
             )
             reasoning_content = ""  # 完整思考过程
             answer_content = ""  # 完整回复
@@ -231,7 +237,10 @@ AI回复：{responseInfo}
                 delta = chunk.choices[0].delta
 
                 # 只收集思考内容
-                if hasattr(delta, "reasoning_content") and delta.reasoning_content is not None:
+                if (
+                    hasattr(delta, "reasoning_content")
+                    and delta.reasoning_content is not None
+                ):
                     if not is_answering:
                         print(delta.reasoning_content, end="", flush=True)
                     reasoning_content += delta.reasoning_content
@@ -250,12 +259,12 @@ AI回复：{responseInfo}
             raise
 
     def _generate_with_deepseek(
-            self,
-            model_name: str,
-            query: str,
-            context: str,
-            api_key: Optional[str] = None,
-            show_reasoning: bool = True
+        self,
+        model_name: str,
+        query: str,
+        context: str,
+        api_key: Optional[str] = None,
+        show_reasoning: bool = True,
     ) -> str:
         """
         使用DeepSeek API生成回答
@@ -276,49 +285,56 @@ AI回复：{responseInfo}
                 if not api_key:
                     raise ValueError("DeepSeek API key not provided")
 
-            client = OpenAI(
-                api_key=api_key,
-                base_url="https://api.deepseek.com"
-            )
+            client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
             messages = [
-                {"role": "system",
-                 "content": "You are a helpful assistant. Use the provided context to answer the question."},
-                {"role": "user", "content": f"Context: {context}\n\nQuestion: {query}"}
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant. Use the provided context to answer the question.",
+                },
+                {"role": "user", "content": f"Context: {context}\n\nQuestion: {query}"},
             ]
 
             response = client.chat.completions.create(
                 model=self.models["deepseek"][model_name],
                 messages=messages,
                 max_tokens=512,
-                stream=False
+                stream=False,
+                reasoning_effort=(
+                    "high"
+                    if show_reasoning
+                    and model_name in {"deepseek-v4-flash", "deepseek-v4-pro"}
+                    else None
+                ),
+                extra_body=(
+                    {"thinking": {"type": "enabled" if show_reasoning else "disabled"}}
+                    if model_name in {"deepseek-v4-flash", "deepseek-v4-pro"}
+                    else None
+                ),
             )
 
-            # 如果是推理模型，处理思维链输出
-            if model_name == "deepseek-r1":
-                message = response.choices[0].message
-                reasoning = message.reasoning_content
-                answer = message.content
+            message = response.choices[0].message
+            reasoning = getattr(message, "reasoning_content", None)
+            answer = (message.content or "").strip()
 
-                if show_reasoning and reasoning:
-                    return f"【思维过程】\n{reasoning}\n\n【最终答案】\n{answer}"
-                return answer
+            if show_reasoning and reasoning:
+                return f"【思维过程】\n{reasoning}\n\n【最终答案】\n{answer}"
 
-            return response.choices[0].message.content.strip()
+            return answer
 
         except Exception as e:
             logger.error(f"Error generating with DeepSeek: {str(e)}")
             raise
 
     def generate(
-            self,
-            provider: str,
-            model_name: str,
-            query: str,
-            search_results: List[Dict],
-            load_model: bool,
-            api_key: Optional[str] = None,
-            show_reasoning: bool = True,
+        self,
+        provider: str,
+        model_name: str,
+        query: str,
+        search_results: List[Dict],
+        load_model: bool,
+        api_key: Optional[str] = None,
+        show_reasoning: bool = True,
     ) -> Dict:
         """
         生成回答并保存结果
@@ -337,19 +353,27 @@ AI回复：{responseInfo}
         """
         try:
             # 准备上下文
-            context = "\n\n".join([
-                f"[Source {i + 1}]: {result['text']}"
-                for i, result in enumerate(search_results)
-            ])
+            context = "\n\n".join(
+                [
+                    f"[Source {i + 1}]: {result['text']}"
+                    for i, result in enumerate(search_results)
+                ]
+            )
 
             ts = time.time()
             # 根据不同提供商生成回答
             if provider == "huggingface":
-                response = self._generate_with_huggingface(model_name, query, context, load_model)
+                response = self._generate_with_huggingface(
+                    model_name, query, context, load_model
+                )
             elif provider == "aliyun":
-                response = self._generate_with_aliyun(model_name, query, context, api_key)
+                response = self._generate_with_aliyun(
+                    model_name, query, context, api_key
+                )
             elif provider == "deepseek":
-                response = self._generate_with_deepseek(model_name, query, context, api_key, show_reasoning)
+                response = self._generate_with_deepseek(
+                    model_name, query, context, api_key, show_reasoning
+                )
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
 
@@ -360,21 +384,21 @@ AI回复：{responseInfo}
                 "provider": provider,
                 "model": model_name,
                 "response": response,
-                "context": search_results
+                "context": search_results,
             }
 
             # 生成文件名并保存
             spend_sec = int(time.time() - ts)
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             filename = f"generation_{provider}_{model_name}_{spend_sec}s_{timestamp}_{load_model}.json"
-            filepath = os.path.join("05-generation-results", filename)
+            filepath = GENERATION_RESULTS_DIR / filename
 
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
 
             return {
                 "response": response,
-                "saved_filepath": filepath
+                "saved_filepath": workspace_relative(filepath),
             }
 
         except Exception as e:

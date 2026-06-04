@@ -132,24 +132,24 @@ const Generation = () => {
   };
 
   return (
-    <div className="p-6">
+    <div className="p-6 text-gray-900">
       <h1 className="text-blue-500 text-3xl font-bold text-center mb-6"> 检索增强生成工具 </h1>
       <hr />
-      <h2 className="text-2xl font-bold mb-6">响应生成</h2>
-      
+      <h2 className="text-2xl font-bold mb-6 text-gray-900">响应生成</h2>
+
       <div className="grid grid-cols-12 gap-6">
         {/* Left Panel - Generation Controls */}
         <div className="col-span-4 space-y-4">
-          <div className="p-4 border rounded-lg bg-white shadow-sm">
+          <div className="p-4 border rounded-lg bg-white shadow-sm text-gray-900">
             <div className="space-y-4">
               <div>
-                    <label className="block text-sm font-medium mb-1">提问</label>
-                    <textarea
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      placeholder="Enter your question..."
-                      className="block w-full p-2 border rounded h-32 resize-none"
-                    />
+                <label className="block text-sm font-medium mb-1">提问</label>
+                <textarea
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Enter your question..."
+                  className="block w-full p-2 border rounded h-32 resize-none text-gray-900 bg-white"
+                />
               </div>
 
               <div>
@@ -157,7 +157,7 @@ const Generation = () => {
                 <select
                   value={selectedFile}
                   onChange={(e) => setSelectedFile(e.target.value)}
-                  className="block w-full p-2 border rounded"
+                  className="block w-full p-2 border rounded text-gray-900 bg-white"
                 >
                   <option value="">Select search results file...</option>
                   {searchFiles.map(file => (
@@ -175,7 +175,7 @@ const Generation = () => {
                     <select
                       value={provider}
                       onChange={(e) => setProvider(e.target.value)}
-                      className="block w-full p-2 border rounded"
+                      className="block w-full p-2 border rounded text-gray-900 bg-white"
                     >
                       <option value="">Select provider...</option>
                       {Object.keys(models).map(p => (
@@ -189,15 +189,17 @@ const Generation = () => {
                       <label className="block text-sm font-medium mb-1">生成模型</label>
                       <select
                         value={modelName}
-                        onChange={(e) => {setModelName(e.target.value); setLoadModel(true)}}
-                        className="block w-full p-2 border rounded"
+                        onChange={(e) => { setModelName(e.target.value); setLoadModel(true) }}
+                        className="block w-full p-2 border rounded text-gray-900 bg-white"
                       >
                         <option value="">Select model...</option>
                         {Object.entries(models[provider] || {}).map(([id, name]) => (
                           <option key={id} value={id}>
-                            {id === 'deepseek-v3' ? 'DeepSeek V3' :
-                             id === 'deepseek-r1' ? 'DeepSeek R1' :
-                             name}
+                            {id === 'deepseek-v4-flash' ? 'DeepSeek V4 Flash' :
+                              id === 'deepseek-v4-pro' ? 'DeepSeek V4 Pro' :
+                                id === 'deepseek-chat' ? 'DeepSeek Chat (legacy alias)' :
+                                  id === 'deepseek-reasoner' ? 'DeepSeek Reasoner (legacy alias)' :
+                                    name}
                           </option>
                         ))}
                       </select>
@@ -212,12 +214,12 @@ const Generation = () => {
                         value={apiKey}
                         onChange={(e) => setApiKey(e.target.value)}
                         placeholder="Enter your API key..."
-                        className="block w-full p-2 border rounded"
+                        className="block w-full p-2 border rounded text-gray-900 bg-white"
                       />
                     </div>
                   )}
 
-                  {provider === 'deepseek' && modelName === 'deepseek-r1' && (
+                  {provider === 'deepseek' && modelName && (
                     <div className="flex items-center space-x-2">
                       <input
                         type="checkbox"
@@ -241,9 +243,8 @@ const Generation = () => {
                   </button>
 
                   {status && (
-                    <div className={`p-4 rounded-lg ${
-                      status.includes('失败') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
-                    }`}>
+                    <div className={`p-4 rounded-lg ${status.includes('失败') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                      }`}>
                       {status}
                     </div>
                   )}
@@ -258,11 +259,11 @@ const Generation = () => {
           {selectedFile ? (
             <>
               {/* Search Results Context */}
-              <div className="mb-6 p-4 border rounded-lg bg-white shadow-sm">
-                <h3 className="text-xl font-semibold mb-4">检索的上下文</h3>
+              <div className="mb-6 p-4 border rounded-lg bg-white shadow-sm text-gray-900">
+                <h3 className="text-xl font-semibold mb-4 text-gray-900">检索的上下文</h3>
                 <div className="space-y-4 max-h-[300px] overflow-y-auto">
                   {searchResults.map((result, idx) => (
-                    <div key={idx} className="p-4 border rounded bg-gray-50">
+                    <div key={idx} className="p-4 border rounded bg-gray-50 text-gray-900">
                       <div className="flex justify-between items-start mb-2">
                         <span className="font-medium text-sm text-gray-500">
                           Match Score: {(result.score * 100).toFixed(1)}%
@@ -272,26 +273,26 @@ const Generation = () => {
                           <div>Page: {result.metadata.page}</div>
                         </div>
                       </div>
-                      <p className="text-sm whitespace-pre-wrap">{result.text}</p>
+                      <p className="text-sm whitespace-pre-wrap text-gray-900">{result.text}</p>
                     </div>
                   ))}
                 </div>
               </div>
-           </>
+            </>
           ) : (
-            <div className="mb-6 p-4 border rounded-lg bg-white shadow-sm">
-                <h3 className="text-xl font-semibold mb-4">无检索上下文</h3>
+            <div className="mb-6 p-4 border rounded-lg bg-white shadow-sm text-gray-900">
+              <h3 className="text-xl font-semibold mb-4 text-gray-900">无检索上下文</h3>
             </div>
           )}
-              {/* Generated Response */}
-              {response && (
-                <div className="p-4 border rounded-lg bg-white shadow-sm">
-                  <h3 className="text-xl font-semibold mb-4">生成的回答</h3>
-                  <div className="p-4 border rounded bg-gray-50">
-                    <p className="whitespace-pre-wrap"><MarkdownViewer markdownText={response} /></p>
-                  </div>
-                </div>
-              )}
+          {/* Generated Response */}
+          {response && (
+            <div className="p-4 border rounded-lg bg-white shadow-sm text-gray-900">
+              <h3 className="text-xl font-semibold mb-4 text-gray-900">生成的回答</h3>
+              <div className="p-4 border rounded bg-gray-50 text-gray-900">
+                <div className="whitespace-pre-wrap text-gray-900"><MarkdownViewer markdownText={response} /></div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

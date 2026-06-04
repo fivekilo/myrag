@@ -130,15 +130,15 @@ const Search = () => {
   };
 
   return (
-    <div className="p-6">
+    <div className="p-6 text-gray-900">
       <h1 className="text-blue-500 text-3xl font-bold text-center mb-6"> 检索增强生成工具 </h1>
       <hr />
-      <h2 className="text-2xl font-bold mb-6">相似性检索</h2>
+      <h2 className="text-2xl font-bold mb-6 text-gray-900">相似性检索</h2>
       
       <div className="grid grid-cols-12 gap-6">
         {/* Left Panel - Search Controls */}
         <div className="col-span-3 space-y-4">
-          <div className="p-4 border rounded-lg bg-white shadow-sm">
+          <div className="p-4 border rounded-lg bg-white shadow-sm text-gray-900">
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-1">用户查询</label>
@@ -146,7 +146,7 @@ const Search = () => {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Enter your search query..."
-                  className="block w-full p-2 border rounded h-32 resize-none"
+                  className="block w-full p-2 border rounded h-32 resize-none text-gray-900 bg-white"
                 />
               </div>
 
@@ -155,7 +155,7 @@ const Search = () => {
                 <select
                   value={selectedProvider}
                   onChange={(e) => setSelectedProvider(e.target.value)}
-                  className="block w-full p-2 border rounded"
+                  className="block w-full p-2 border rounded text-gray-900 bg-white"
                 >
                   {providers.map(provider => (
                     <option key={provider.id} value={provider.id}>
@@ -170,7 +170,7 @@ const Search = () => {
                 <select
                   value={collection}
                   onChange={(e) => setCollection(e.target.value)}
-                  className="block w-full p-2 border rounded"
+                  className="block w-full p-2 border rounded text-gray-900 bg-white"
                 >
                   <option value="">Choose a collection...</option>
                   {collections.map(coll => (
@@ -189,7 +189,7 @@ const Search = () => {
                   onChange={(e) => setTopK(parseInt(e.target.value))}
                   min="1"
                   max="10"
-                  className="block w-full p-2 border rounded"
+                  className="block w-full p-2 border rounded text-gray-900 bg-white"
                 />
               </div>
 
@@ -262,11 +262,11 @@ const Search = () => {
         </div>
 
         {/* Right Panel - Results */}
-        <div className="col-span-9 border rounded-lg bg-white shadow-sm">
+        <div className="col-span-9 border rounded-lg bg-white shadow-sm text-gray-900">
           {results.length > 0 ? (
-            <div className="p-4">
+            <div className="p-4 text-gray-900">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-semibold">Search Results</h3>
+                <h3 className="text-xl font-semibold text-gray-900">Search Results</h3>
                 <button
                   onClick={handleSaveResults}
                   className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
@@ -276,7 +276,7 @@ const Search = () => {
               </div>
               <div className="space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto">
                 {results.map((result, idx) => (
-                  <div key={idx} className="p-4 border rounded bg-gray-50">
+                  <div key={idx} className="p-4 border rounded bg-gray-50 text-gray-900">
                     <div className="flex justify-between items-start mb-2">
                       <span className="font-medium text-sm text-gray-500">
                         Match Score: {(result.score * 100).toFixed(1)}%
@@ -287,7 +287,7 @@ const Search = () => {
                         <div>Chunk: {result.metadata.chunk}</div>
                       </div>
                     </div>
-                    <p className="text-sm whitespace-pre-wrap">{result.text}</p>
+                    <p className="text-sm whitespace-pre-wrap text-gray-900">{result.text}</p>
                   </div>
                 ))}
               </div>

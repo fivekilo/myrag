@@ -8,8 +8,9 @@ import os
 import json
 from pymilvus import MilvusClient, exceptions
 import chromadb
+from utils.paths import CHROMADB_DIR, SEARCH_RESULTS_DIR, workspace_relative
 
-chromadb_path = "./03-vector-store/chromadb"
+chromadb_path = str(CHROMADB_DIR)
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +28,8 @@ class SearchService:
         """
         self.embedding_service = EmbeddingService()
         self.milvus_uri = MILVUS_CONFIG["uri"]
-        self.search_results_dir = "04-search-results"
-        os.makedirs(self.search_results_dir, exist_ok=True)
+        self.search_results_dir = SEARCH_RESULTS_DIR
+        self.search_results_dir.mkdir(parents=True, exist_ok=True)
         self.client=chromadb.PersistentClient(chromadb_path)
 
     def get_providers(self) -> List[Dict[str, str]]:
@@ -69,14 +70,15 @@ class SearchService:
             print(collection_names)
 
             for sample in collection_names:
-                name=sample.name
+                name = sample if isinstance(sample, str) else getattr(sample, "name", None)
+                if not name:
+                    continue
                 try:
-                    #collection = self.client.get_or_create_collection(name)
                     collection = self.client.get_or_create_collection(name)
                     collections.append({
                         "id": name,
                         "name": name,
-                        "count": 1      #collection.num_entities
+                        "count": collection.count()
                     })
                 except Exception as e:
                     logger.error(f"Error getting info for collection {name}: {str(e)}")
@@ -109,7 +111,7 @@ class SearchService:
             # 使用集合ID的基础名称（去掉路径相关字符）
             collection_base = os.path.basename(collection_id)
             filename = f"search_{collection_base}_{timestamp}.json"
-            filepath = os.path.join(self.search_results_dir, filename)
+            filepath = self.search_results_dir / filename
 
             search_data = {
                 "query": query,
@@ -124,7 +126,7 @@ class SearchService:
                 json.dump(search_data, f, ensure_ascii=False, indent=2)
 
             logger.info(f"Successfully saved search results to: {filepath}")
-            return filepath
+            return workspace_relative(filepath)
 
         except Exception as e:
             logger.error(f"Error saving search results: {str(e)}")
@@ -178,17 +180,18 @@ class SearchService:
 
             logger.info(f"query: {query}")
 
-            sample_entity =collection.query(
-                query_texts=[query],
-                n_results=1,
-            )
+            sample_entity = collection.peek(limit=1)
+            if not sample_entity or not sample_entity.get('metadatas'):
+                raise ValueError(f"Collection {collection_id} is empty")
+
+            sample_metadata = sample_entity['metadatas'][0]
 
             # 使用collection中存储的配置创建查询向量
             logger.info("Creating query embedding")
             query_embedding = self.embedding_service.create_single_embedding(
                 query,
-                provider=sample_entity['metadatas'][0][0].get('embedding_provider'),
-                model=sample_entity['metadatas'][0][0].get('embedding_model')
+                provider=sample_metadata.get('embedding_provider'),
+                model=sample_metadata.get('embedding_model')
             )
             logger.info(f"Query embedding created with dimension: {len(query_embedding)}")
 

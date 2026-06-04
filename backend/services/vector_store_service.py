@@ -4,6 +4,7 @@ import json
 from typing import List, Dict, Any
 import logging
 from pathlib import Path
+import hashlib
 from pymilvus import connections, utility
 from pymilvus import Collection, DataType, FieldSchema, CollectionSchema
 from utils.config import VectorDBProvider, MILVUS_CONFIG  # Updated import
@@ -11,10 +12,11 @@ from pypinyin import lazy_pinyin, Style
 from pymilvus import MilvusClient, exceptions
 import chromadb
 import re
-from chromadb.utils import embedding_functions
+from utils.paths import VECTOR_STORE_DIR, CHROMADB_DIR
 
-chromadb_path = "./03-vector-store/chromadb"
+chromadb_path = str(CHROMADB_DIR)
 logger = logging.getLogger(__name__)
+
 
 def clean_filename(file_name: str) -> str:
     """
@@ -33,27 +35,73 @@ def clean_filename(file_name: str) -> str:
     # 步骤1：替换非法字符为下划线
     # 允许的字符：a-zA-Z0-9._- 和中文字符（\u4e00-\u9fa5）
     # 注意：将'-'放在字符集最后避免被解释为范围符号
-    cleaned = re.sub(r'[^a-zA-Z0-9._\u4e00-\u9fa5-]', '_', file_name)
+    cleaned = re.sub(r"[^a-zA-Z0-9._\u4e00-\u9fa5-]", "_", file_name)
 
     # 步骤2：合并连续的下划线
-    cleaned = re.sub(r'_+', '_', cleaned)
+    cleaned = re.sub(r"_+", "_", cleaned)
 
     # 步骤3：确保以字母或数字开头
     # 如果开头不是字母或数字，添加默认前缀"file_"
-    if not re.match(r'^[a-zA-Z]', cleaned):
+    if not re.match(r"^[a-zA-Z]", cleaned):
         cleaned = "file_" + cleaned
         # 再次合并可能产生的连续下划线
-        cleaned = re.sub(r'_+', '_', cleaned)
+        cleaned = re.sub(r"_+", "_", cleaned)
 
     # 步骤4：确保以字母或数字结尾
     # 如果结尾不是字母或数字，添加默认后缀"_file"
-    if not re.search(r'[a-zA-Z0-9]$', cleaned):
+    if not re.search(r"[a-zA-Z0-9]$", cleaned):
         cleaned += "_file"
         # 再次合并可能产生的连续下划线
-        cleaned = re.sub(r'_+', '_', cleaned)
+        cleaned = re.sub(r"_+", "_", cleaned)
 
     return cleaned
 
+
+def build_collection_name(
+    filename: str, embedding_provider: str, timestamp: str, max_length: int = 63
+) -> str:
+    """
+    生成满足 Chroma 命名约束的集合名称。
+
+    规则：
+    1. 只保留字母、数字、下划线和连字符
+    2. 总长度不超过 max_length
+    3. 以字母数字开头和结尾
+    4. 使用短哈希保留长文件名场景下的唯一性
+    """
+    raw_base_name = filename.replace(".pdf", "") if filename else "doc"
+    pinyin_base_name = "".join(lazy_pinyin(raw_base_name, style=Style.NORMAL))
+    normalized_base_name = clean_filename(pinyin_base_name).lower().replace(".", "_")
+    normalized_provider = (
+        clean_filename(embedding_provider or "unknown").lower().replace(".", "_")
+    )
+
+    normalized_base_name = re.sub(r"[^a-z0-9_-]", "_", normalized_base_name)
+    normalized_provider = re.sub(r"[^a-z0-9_-]", "_", normalized_provider)
+
+    normalized_base_name = normalized_base_name.strip("_-") or "doc"
+    normalized_provider = normalized_provider.strip("_-") or "unknown"
+
+    hash_suffix = hashlib.md5(
+        f"{raw_base_name}_{normalized_provider}".encode("utf-8")
+    ).hexdigest()[:8]
+    fixed_suffix = f"_{normalized_provider}_{hash_suffix}_{timestamp}"
+
+    available_base_length = max_length - len(fixed_suffix)
+    if available_base_length < 3:
+        raise ValueError("Collection name suffix is too long to build a valid name")
+
+    trimmed_base_name = (
+        normalized_base_name[:available_base_length].rstrip("_-") or "doc"
+    )
+    collection_name = f"{trimmed_base_name}{fixed_suffix}"
+    collection_name = re.sub(r"^[^a-z0-9]+", "", collection_name)
+    collection_name = re.sub(r"[^a-z0-9]+$", "", collection_name)
+
+    if not collection_name:
+        collection_name = f"doc_{hash_suffix}_{timestamp}"
+
+    return collection_name[:max_length]
 
 
 class VectorDBConfig:
@@ -73,7 +121,6 @@ class VectorDBConfig:
         self.index_mode = index_mode
         self.milvus_uri = MILVUS_CONFIG["uri"]
         self.chromadb_uri = chromadb_path
-
 
     def _get_milvus_index_type(self, index_mode: str) -> str:
         """
@@ -119,10 +166,10 @@ class VectorStoreService:
         """
         self.initialized_dbs = {}
         # 确保存储目录存在
-        os.makedirs("03-vector-store", exist_ok=True)
+        VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
 
         # 连接到chroma
-        self.client=chromadb.PersistentClient(chromadb_path)
+        self.client = chromadb.PersistentClient(chromadb_path)
 
     def _get_milvus_index_type(self, config: VectorDBConfig) -> str:
         """
@@ -148,7 +195,9 @@ class VectorStoreService:
         """
         return config._get_milvus_index_params(config.index_mode)
 
-    def index_embeddings(self, embedding_file: str, config: VectorDBConfig) -> Dict[str, Any]:
+    def index_embeddings(
+        self, embedding_file: str, config: VectorDBConfig
+    ) -> Dict[str, Any]:
         """
         将嵌入向量索引到向量数据库
 
@@ -180,7 +229,7 @@ class VectorStoreService:
             "total_vectors": len(embeddings_data["embeddings"]),
             "index_size": result.get("index_size", "N/A"),
             "processing_time": processing_time,
-            "collection_name": result.get("collection_name", "N/A")
+            "collection_name": result.get("collection_name", "N/A"),
         }
 
     def _load_embeddings(self, file_path: str) -> Dict[str, Any]:
@@ -194,12 +243,14 @@ class VectorStoreService:
             包含嵌入向量和元数据的字典
         """
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 logger.info(f"Loading embeddings from {file_path}")
 
                 if not isinstance(data, dict) or "embeddings" not in data:
-                    raise ValueError("Invalid embedding file format: missing 'embeddings' key")
+                    raise ValueError(
+                        "Invalid embedding file format: missing 'embeddings' key"
+                    )
 
                 # 返回完整的数据，包括顶层配置
                 logger.info(f"Found {len(data['embeddings'])} embeddings")
@@ -209,7 +260,9 @@ class VectorStoreService:
             logger.error(f"Error loading embeddings from {file_path}: {str(e)}")
             raise
 
-    def _index_to_milvus(self, embeddings_data: Dict[str, Any], config: VectorDBConfig) -> Dict[str, Any]:
+    def _index_to_milvus(
+        self, embeddings_data: Dict[str, Any], config: VectorDBConfig
+    ) -> Dict[str, Any]:
         """
         将嵌入向量索引到Milvus数据库
 
@@ -221,33 +274,19 @@ class VectorStoreService:
             索引结果信息字典
         """
         try:
-            # 使用 filename 作为 collection 名称前缀
             filename = embeddings_data.get("filename", "")
-            # 如果有 .pdf 后缀，移除它
-            base_name = filename.replace('.pdf', '') if filename else "doc"
-
-            # Convert Chinese characters to pinyin
-            base_name = ''.join(lazy_pinyin(base_name, style=Style.NORMAL))
-
-            # Replace hyphens with underscores in the base name
-            base_name = base_name.replace('-', '_')
-            base_name = base_name.replace(' ', '_')
-
-            # Ensure the collection name starts with a letter or underscore
-            if not base_name[0].isalpha() and base_name[0] != '_':
-                base_name = f"_{base_name}"
-
-            # Get embedding provider
             embedding_provider = embeddings_data.get("embedding_provider", "unknown")
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-            collection_name = f"{base_name}_{embedding_provider}_{timestamp}"
+            collection_name = build_collection_name(
+                filename, embedding_provider, timestamp, max_length=63
+            )
 
             # 连接到Milvus
 
             client = MilvusClient(
                 uri="http://localhost:19530",
                 token="root:Milvus",
-                db_name=config.milvus_uri
+                db_name=config.milvus_uri,
             )
 
             # 从顶层配置获取向量维度
@@ -275,8 +314,8 @@ class VectorStoreService:
                     "name": "vector",
                     "dtype": "FLOAT_VECTOR",
                     "dim": vector_dim,
-                    "params": self._get_milvus_index_params(config)
-                }
+                    "params": self._get_milvus_index_params(config),
+                },
             ]
 
             # 准备数据为列表格式
@@ -284,17 +323,25 @@ class VectorStoreService:
             for emb in embeddings_data["embeddings"]:
                 entity = {
                     "content": str(emb["metadata"].get("content", "")),
-                    "document_name": embeddings_data.get("filename", ""),  # 使用 filename 而不是 document_name
+                    "document_name": embeddings_data.get(
+                        "filename", ""
+                    ),  # 使用 filename 而不是 document_name
                     "chunk_id": int(emb["metadata"].get("chunk_id", 0)),
                     "total_chunks": int(emb["metadata"].get("total_chunks", 0)),
                     "word_count": int(emb["metadata"].get("word_count", 0)),
                     "page_number": str(emb["metadata"].get("page_number", 0)),
                     "page_range": str(emb["metadata"].get("page_range", "")),
                     # "chunking_method": str(emb["metadata"].get("chunking_method", "")),
-                    "embedding_provider": embeddings_data.get("embedding_provider", ""),  # 从顶层配置获取
-                    "embedding_model": embeddings_data.get("embedding_model", ""),  # 从顶层配置获取
-                    "embedding_timestamp": str(emb["metadata"].get("embedding_timestamp", "")),
-                    "vector": [float(x) for x in emb.get("embedding", [])]
+                    "embedding_provider": embeddings_data.get(
+                        "embedding_provider", ""
+                    ),  # 从顶层配置获取
+                    "embedding_model": embeddings_data.get(
+                        "embedding_model", ""
+                    ),  # 从顶层配置获取
+                    "embedding_timestamp": str(
+                        emb["metadata"].get("embedding_timestamp", "")
+                    ),
+                    "vector": [float(x) for x in emb.get("embedding", [])],
                 }
                 entities.append(entity)
 
@@ -315,28 +362,34 @@ class VectorStoreService:
             field_schemas = []
             for field in fields:
                 extra_params = {}
-                if field.get('max_length') is not None:
-                    extra_params['max_length'] = field['max_length']
-                if field.get('dim') is not None:
-                    extra_params['dim'] = field['dim']
-                if field.get('params') is not None:
-                    extra_params['params'] = field['params']
+                if field.get("max_length") is not None:
+                    extra_params["max_length"] = field["max_length"]
+                if field.get("dim") is not None:
+                    extra_params["dim"] = field["dim"]
+                if field.get("params") is not None:
+                    extra_params["params"] = field["params"]
                 field_schema = FieldSchema(
                     name=field["name"],
                     dtype=getattr(DataType, field["dtype"]),
                     is_primary=field.get("is_primary", False),
                     auto_id=field.get("auto_id", False),
-                    **extra_params
+                    **extra_params,
                 )
                 field_schemas.append(field_schema)
 
-            schema = CollectionSchema(fields=field_schemas, description=f"Collection for {collection_name}")
+            schema = CollectionSchema(
+                fields=field_schemas, description=f"Collection for {collection_name}"
+            )
             #  collection = Collection(name=collection_name, schema=schema)
-            collection = client.create_collection(collection_name=collection_name, schema=schema)
+            collection = client.create_collection(
+                collection_name=collection_name, schema=schema
+            )
 
             # 插入数据
             logger.info(f"Inserting {len(entities)} vectors")
-            insert_result = client.insert(collection_name=collection_name, data=entities)
+            insert_result = client.insert(
+                collection_name=collection_name, data=entities
+            )
 
             # 创建索引
             index_params = client.prepare_index_params()
@@ -345,17 +398,19 @@ class VectorStoreService:
                 field_name="vector",
                 metric_type="IP",
                 index_type="IVF_FLAT",
-                params={"nlist": 1280}
+                params={"nlist": 1280},
                 #       params=self._get_milvus_index_params(config)
             )
             logger.info(f"create index")
-            client.create_index(collection_name=collection_name, index_params=index_params)
+            client.create_index(
+                collection_name=collection_name, index_params=index_params
+            )
             client.load_collection(collection_name=collection_name)
             logger.info(f"after load \n {insert_result}")
 
             return {
-                "index_size": len(insert_result['ids']),
-                "collection_name": collection_name
+                "index_size": len(insert_result["ids"]),
+                "collection_name": collection_name,
             }
 
         except Exception as e:
@@ -365,7 +420,9 @@ class VectorStoreService:
         finally:
             connections.disconnect("default")
 
-    def _index_to_chroma(self, embeddings_data: Dict[str, Any], config: VectorDBConfig) -> Dict[str, Any]:
+    def _index_to_chroma(
+        self, embeddings_data: Dict[str, Any], config: VectorDBConfig
+    ) -> Dict[str, Any]:
         """
         将嵌入向量索引到chroma数据库
 
@@ -377,22 +434,13 @@ class VectorStoreService:
             索引结果信息字典
         """
         try:
-            # 使用 filename 作为 collection 名称前缀
             filename = embeddings_data.get("filename", "")
-            # 如果有 .pdf 后缀，移除它
-            base_name = filename.replace('.pdf', '') if filename else "doc"
-
-            # Convert Chinese characters to pinyin
-            base_name = ''.join(lazy_pinyin(base_name, style=Style.NORMAL))
-
-            # Replace hyphens with underscores in the base name
-            base_name = clean_filename(base_name)
-            logger.info(f"Filename: {base_name}")
-
-            # Get embedding provider
             embedding_provider = embeddings_data.get("embedding_provider", "unknown")
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-            collection_name = f"{base_name}_{embedding_provider}_{timestamp}"
+            collection_name = build_collection_name(
+                filename, embedding_provider, timestamp, max_length=63
+            )
+            logger.info(f"Filename: {collection_name}")
 
             # collection = self.client.create_collection(
             #     name=collection_name,
@@ -408,11 +456,7 @@ class VectorStoreService:
             collection = self.client.get_or_create_collection(
                 name=collection_name,
                 metadata={"hnsw:space": "cosine"},  # 关键：指定使用余弦相似度空间
-                embedding_function=embedding_functions.SentenceTransformerEmbeddingFunction(
-                    model_name=embeddings_data.get("embedding_model", "")  # 自动将文本转为384维向量
-                )
             )
-
 
             # 从顶层配置获取向量维度
             vector_dim = int(embeddings_data.get("vector_dimension"))
@@ -439,26 +483,34 @@ class VectorStoreService:
                     "name": "vector",
                     "dtype": "FLOAT_VECTOR",
                     "dim": vector_dim,
-                    "params": config._get_chroma_index_type()
-                }
+                    "params": config._get_chroma_index_type(),
+                },
             ]
 
             # 准备数据为列表格式
             entities = []
-            entity_num=0
+            entity_num = 0
             for emb in embeddings_data["embeddings"]:
                 entity = {
-                    "document_name": embeddings_data.get("filename", ""),  # 使用 filename 而不是 document_name
+                    "document_name": embeddings_data.get(
+                        "filename", ""
+                    ),  # 使用 filename 而不是 document_name
+                    "chunk_id": int(emb["metadata"].get("chunk_id", 0)),
                     "total_chunks": int(emb["metadata"].get("total_chunks", 0)),
                     "word_count": int(emb["metadata"].get("word_count", 0)),
                     "page_number": str(emb["metadata"].get("page_number", 0)),
                     "page_range": str(emb["metadata"].get("page_range", "")),
                     # "chunking_method": str(emb["metadata"].get("chunking_method", "")),
-                    "embedding_provider": embeddings_data.get("embedding_provider", ""),  # 从顶层配置获取
-                    "embedding_model": embeddings_data.get("embedding_model", ""),  # 从顶层配置获取
-                    "embedding_timestamp": str(emb["metadata"].get("embedding_timestamp", "")),
+                    "embedding_provider": embeddings_data.get(
+                        "embedding_provider", ""
+                    ),  # 从顶层配置获取
+                    "embedding_model": embeddings_data.get(
+                        "embedding_model", ""
+                    ),  # 从顶层配置获取
+                    "embedding_timestamp": str(
+                        emb["metadata"].get("embedding_timestamp", "")
+                    ),
                     "index_mode": str(config._get_chroma_index_type()),
-                    "vector": [float(x) for x in emb.get("embedding", [])],
                 }
                 entities.append(entity)
                 collection.add(
@@ -467,16 +519,11 @@ class VectorStoreService:
                     embeddings=[[float(x) for x in emb.get("embedding", [])]],
                     ids=[str(int(emb["metadata"].get("chunk_id", 0)))],
                 )
-                entity_num+=1
-
+                entity_num += 1
 
             logger.info(f"Creating CHROMA collection: {collection_name}")
 
-
-            return {
-                "index_size": entity_num,
-                "collection_name": collection_name
-            }
+            return {"index_size": entity_num, "collection_name": collection_name}
 
         except Exception as e:
             logger.error(f"Error indexing to Chroma: {str(e)}")
@@ -535,7 +582,9 @@ class VectorStoreService:
                 logger.info("after delete collection")
         return False
 
-    def get_collection_info(self, provider: str, collection_name: str) -> Dict[str, Any]:
+    def get_collection_info(
+        self, provider: str, collection_name: str
+    ) -> Dict[str, Any]:
         """
         获取指定集合的信息
 
@@ -553,24 +602,24 @@ class VectorStoreService:
                 return {
                     "name": collection_name,
                     "num_entities": collection.num_entities,
-                    "schema": collection.schema.to_dict()
+                    "schema": collection.schema.to_dict(),
                 }
             finally:
                 connections.disconnect("default")
         elif provider == VectorDBProvider.CHROMA:
             try:
-                collection=self.client.get_collection(name=collection_name)
+                collection = self.client.get_collection(name=collection_name)
                 full_data = collection.get()
-                return_info={
+                return_info = {
                     "name": collection_name,
-                    "num_entities": len(full_data['metadatas']),
-                    "schema": full_data['metadatas'][0]
+                    "num_entities": len(full_data["metadatas"]),
+                    "schema": full_data["metadatas"][0],
                 }
                 logger.info(str(return_info))
                 return {
                     "name": collection_name,
-                    "num_entities": len(full_data['metadatas']),
-                    "schema": full_data['metadatas'][0]
+                    "num_entities": len(full_data["metadatas"]),
+                    "schema": full_data["metadatas"][0],
                 }
             finally:
                 logger.info("after get collection info")
