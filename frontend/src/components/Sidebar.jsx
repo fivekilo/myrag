@@ -1,11 +1,11 @@
 // src/components/Sidebar.jsx
-import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import ragLogo from '../assets/raglogo.png'
 
 const Sidebar = () => {
   const location = useLocation();
   const links = [
+    { to: "/dashboard", text: "数据概览" },
     { to: "/load-file", text: "文档导入" },
     { to: "/chunk-file", text: "知识分块" },
     { to: "/parse-file", text: "文件解析" },

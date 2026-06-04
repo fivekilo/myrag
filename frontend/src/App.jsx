@@ -1,7 +1,7 @@
 // src/App.jsx
-import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
+import Dashboard from './pages/Dashboard';
 import LoadFile from './pages/LoadFile';
 import ChunkFile from './pages/ChunkFile';
 import EmbeddingFile from './pages/EmbeddingFile';
@@ -24,7 +24,8 @@ const App = () => {
             <Route path="/indexing" element={<Indexing />} />
             <Route path="/search" element={<Search />} />
             <Route path="/generation" element={<Generation />} />
-            <Route path="/" element={<LoadFile />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/" element={<Dashboard />} />
           </Routes>
         </main>
       </div>
