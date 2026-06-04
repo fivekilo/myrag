@@ -1,5 +1,9 @@
 import os
 import logging
+from pathlib import Path
+import dotenv
+
+dotenv.load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # Configure logger
 logger = logging.getLogger(__name__)

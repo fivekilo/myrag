@@ -5,8 +5,8 @@ import { apiBaseUrl } from '../config/config';
 
 const EmbeddingFile = () => {
   const [selectedDoc, setSelectedDoc] = useState('');
-  const [embeddingProvider, setEmbeddingProvider] = useState('openai');
-  const [embeddingModel, setEmbeddingModel] = useState('text-embedding-3-large');
+  const [embeddingProvider, setEmbeddingProvider] = useState('huggingface');
+  const [embeddingModel, setEmbeddingModel] = useState('BAAI/bge-small-zh-v1.5');
   const [status, setStatus] = useState('');
   const [availableDocs, setAvailableDocs] = useState([]);
   const [embeddedDocs, setEmbeddedDocs] = useState([]);
@@ -44,7 +44,7 @@ const EmbeddingFile = () => {
       console.log('开始获取文档列表...');
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超时
-      
+
       const response = await fetch(`${apiBaseUrl}/documents?type=all`, {
         signal: controller.signal,
         headers: {
@@ -52,13 +52,13 @@ const EmbeddingFile = () => {
           'Content-Type': 'application/json'
         }
       });
-      
+
       clearTimeout(timeoutId);
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
-      
+
       console.log('API响应状态:', response.status);
       const data = await response.json();
       console.log('API响应数据:', data);
@@ -93,7 +93,7 @@ const EmbeddingFile = () => {
       setStatus('Please select a document');
       return;
     }
-    
+
     setStatus('Processing...');
     try {
       const response = await fetch(`${apiBaseUrl}/embed`, {
@@ -107,12 +107,12 @@ const EmbeddingFile = () => {
           model: embeddingModel
         }),
       });
-      
+
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.detail || 'Failed to create embeddings');
       }
-      
+
       const data = await response.json();
       setEmbeddings(data.embeddings);
       setStatus(`Embedding completed successfully! Saved to: ${data.filepath}`);
@@ -167,21 +167,19 @@ const EmbeddingFile = () => {
         {/* 标签页切换 */}
         <div className="flex mb-4 border-b">
           <button
-            className={`px-4 py-2 ${
-              activeTab === 'preview'
+            className={`px-4 py-2 ${activeTab === 'preview'
                 ? 'border-b-2 border-blue-500 text-blue-600'
                 : 'text-gray-600'
-            }`}
+              }`}
             onClick={() => setActiveTab('preview')}
           >
             嵌入文档预览
           </button>
           <button
-            className={`px-4 py-2 ml-4 ${
-              activeTab === 'documents'
+            className={`px-4 py-2 ml-4 ${activeTab === 'documents'
                 ? 'border-b-2 border-blue-500 text-blue-600'
                 : 'text-gray-600'
-            }`}
+              }`}
             onClick={() => setActiveTab('documents')}
           >
             嵌入文档管理
@@ -199,13 +197,13 @@ const EmbeddingFile = () => {
                       Chunk {embedding.metadata.chunk_id} of {embedding.metadata.total_chunks}
                     </div>
                     <div className="text-xs text-gray-400 mb-2">
-                      Document: {embedding.metadata.filename || embedding.metadata.document_name || 'N/A'} | 
-                      Page: {embedding.metadata.page_number || 'N/A'} | 
+                      Document: {embedding.metadata.filename || embedding.metadata.document_name || 'N/A'} |
+                      Page: {embedding.metadata.page_number || 'N/A'} |
                       Page Range: {embedding.metadata.page_range || 'N/A'}
                     </div>
                     <div className="text-xs text-gray-400 mb-2">
-                      Model: {embedding.metadata.embedding_model || 'N/A'} | 
-                      Provider: {embedding.metadata.embedding_provider || 'N/A'} | 
+                      Model: {embedding.metadata.embedding_model || 'N/A'} |
+                      Provider: {embedding.metadata.embedding_provider || 'N/A'} |
                       Dimension: {embedding.metadata.vector_dimension || 'N/A'} |
                       Timestamp: {new Date(embedding.metadata.embedding_timestamp).toLocaleString()}
                     </div>
@@ -270,7 +268,7 @@ const EmbeddingFile = () => {
       <h1 className="text-blue-500 text-3xl font-bold text-center mb-6"> 检索增强生成工具 </h1>
       <hr />
       <h2 className="text-2xl font-bold mb-6">向量存储</h2>
-      
+
       <div className="grid grid-cols-12 gap-6">
         {/* Left Panel */}
         <div className="col-span-3 space-y-4">
@@ -322,7 +320,7 @@ const EmbeddingFile = () => {
               </select>
             </div>
 
-            <button 
+            <button
               onClick={handleEmbed}
               className="mt-4 w-full px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
               disabled={!selectedDoc}
@@ -332,9 +330,8 @@ const EmbeddingFile = () => {
           </div>
 
           {status && (
-            <div className={`p-4 rounded-lg ${
-              status.includes('Error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
-            }`}>
+            <div className={`p-4 rounded-lg ${status.includes('Error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+              }`}>
               {status}
             </div>
           )}

@@ -22,4 +22,14 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python cache and local environment files
 __pycache__/
+*.py[cod]
+backend/.env
+backend/01-chunked-docs/
+backend/01-loaded-docs/
+backend/02-embedded-docs/
+backend/03-vector-store/
+backend/04-search-results/
+backend/05-generation-results/
