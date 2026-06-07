@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Optional
 import logging
 from datetime import datetime
 from pymilvus import connections, Collection, utility
+from openai import OpenAI
 from services.embedding_service import EmbeddingService
 from utils.config import VectorDBProvider, MILVUS_CONFIG
 import os
@@ -31,6 +32,43 @@ class SearchService:
         self.search_results_dir = SEARCH_RESULTS_DIR
         self.search_results_dir.mkdir(parents=True, exist_ok=True)
         self.client=chromadb.PersistentClient(chromadb_path)
+
+    def _expand_query(self, original_query: str) -> List[str]:
+        """Use an LLM to create query variants for better retrieval recall."""
+        api_key = os.getenv("ALIYUN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+        if not api_key:
+            logger.info("No Aliyun API key found, using original query only")
+            return [original_query]
+
+        prompt = f"""你是一个AI助手。你的任务是将用户的问题改写成3个不同角度的搜索查询词，以便更好在向量数据库中检索。
+请直接输出查询词，每行一个，不要包含序号、引号或其他说明。
+用户原问题: {original_query}"""
+
+        try:
+            client = OpenAI(
+                api_key=api_key,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            )
+            response = client.chat.completions.create(
+                model="qwen-plus",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+            content = response.choices[0].message.content or ""
+            variants = [line.strip() for line in content.splitlines() if line.strip()]
+
+            queries = []
+            seen_queries = set()
+            for candidate in [original_query, *variants]:
+                normalized = candidate.strip()
+                if normalized and normalized not in seen_queries:
+                    queries.append(normalized)
+                    seen_queries.add(normalized)
+
+            return queries or [original_query]
+        except Exception as e:
+            logger.error(f"Expand query failed: {e}")
+            return [original_query]
 
     def get_providers(self) -> List[Dict[str, str]]:
         """
@@ -187,47 +225,10 @@ class SearchService:
             sample_metadata = sample_entity['metadatas'][0]
 
             # 使用collection中存储的配置创建查询向量
-            logger.info("Creating query embedding")
-            query_embedding = self.embedding_service.create_single_embedding(
-                query,
-                provider=sample_metadata.get('embedding_provider'),
-                model=sample_metadata.get('embedding_model')
-            )
-            logger.info(f"Query embedding created with dimension: {len(query_embedding)}")
-
-            results =collection.query(
-                query_embeddings=[query_embedding],
-                n_results=top_k,
-            )
-
-            logger.info(f"Sample query results: {results.get('documents')[0][0]}")
+            queries = self._expand_query(query)
+            logger.info(f"Expanded queries: {queries}")
 
             # 处理结果
-            processed_results = []
-            results_count=len(results['ids'][0])
-            logger.info(f"Raw search results count: {results_count}")
-
-            for hit in range(results_count):
-                hit_score=1-results['distances'][0][hit]
-                logger.info(f"Processing hit - Score: {hit_score}, Word Count: {results['metadatas'][0][hit].get('word_count')}")
-                if hit_score >= threshold:
-                    processed_results.append({
-                        "text": results.get('documents')[0][hit],
-                        "score": float(hit_score),
-                        "metadata": {
-                            "source": results['metadatas'][0][hit].get('document_name'),
-                            "page": results['metadatas'][0][hit].get('page_number'),
-                            "chunk": results.get('ids')[0][hit],
-                            "total_chunks": results['metadatas'][0][hit].get('total_chunks'),
-                            "page_range": results['metadatas'][0][hit].get('page_range'),
-                            "embedding_provider": results['metadatas'][0][hit].get('embedding_provider'),
-                            "embedding_model": results['metadatas'][0][hit].get('embedding_model'),
-                            "embedding_timestamp": results['metadatas'][0][hit].get('embedding_timestamp')
-                        }
-                    })
-
-
-
             # 连接到 Milvus
             #logger.info(f"Connecting to Milvus at {self.milvus_uri}")
             #connections.connect(
@@ -319,6 +320,49 @@ class SearchService:
             #                     "embedding_timestamp": hit.entity.embedding_timestamp
             #                 }
             #             })
+
+            processed_results = []
+            seen_chunk_ids = set()
+
+            for expanded_query in queries:
+                logger.info(f"Running multi-query retrieval for: {expanded_query}")
+                query_embedding = self.embedding_service.create_single_embedding(
+                    expanded_query,
+                    provider=sample_metadata.get('embedding_provider'),
+                    model=sample_metadata.get('embedding_model')
+                )
+                results =collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=top_k,
+                )
+
+                results_count=len(results['ids'][0]) if results.get('ids') else 0
+                logger.info(f"Raw search results count for expanded query: {results_count}")
+
+                for hit in range(results_count):
+                    chunk_id = results.get('ids')[0][hit]
+                    hit_score=1-results['distances'][0][hit]
+                    metadata = results['metadatas'][0][hit]
+                    logger.info(f"Processing hit - Score: {hit_score}, Word Count: {metadata.get('word_count')}")
+                    if hit_score >= threshold and chunk_id not in seen_chunk_ids:
+                        seen_chunk_ids.add(chunk_id)
+                        processed_results.append({
+                            "text": results.get('documents')[0][hit],
+                            "score": float(hit_score),
+                            "metadata": {
+                                "source": metadata.get('document_name'),
+                                "page": metadata.get('page_number'),
+                                "chunk": chunk_id,
+                                "total_chunks": metadata.get('total_chunks'),
+                                "page_range": metadata.get('page_range'),
+                                "embedding_provider": metadata.get('embedding_provider'),
+                                "embedding_model": metadata.get('embedding_model'),
+                                "embedding_timestamp": metadata.get('embedding_timestamp')
+                            }
+                        })
+
+            processed_results.sort(key=lambda item: item["score"], reverse=True)
+            processed_results = processed_results[:top_k]
 
             response_data = {"results": processed_results}
 
