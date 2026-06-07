@@ -6,15 +6,16 @@ dotenv.load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 import json
 from datetime import datetime
 from enum import Enum
-import boto3
-import torch
-from langchain_community.embeddings import (
-    BedrockEmbeddings,
-    OpenAIEmbeddings,
-    HuggingFaceEmbeddings,
-)
+import numpy as np
+import onnxruntime as ort
+from tokenizers import Tokenizer
 from utils.model_utils import get_huggingface_model_path
 from utils.paths import EMBEDDED_DOCS_DIR
+
+try:
+    import boto3
+except Exception:  # pragma: no cover - optional dependency at runtime
+    boto3 = None
 
 
 class EmbeddingProvider(str, Enum):
@@ -275,6 +276,13 @@ class EmbeddingFactory:
             ValueError: 当提供商不支持时抛出
         """
         if config.provider == EmbeddingProvider.BEDROCK:
+            if boto3 is None:
+                raise ImportError(
+                    "boto3 is not installed. Install it to use the Bedrock embedding provider."
+                )
+
+            from langchain_community.embeddings import BedrockEmbeddings
+
             bedrock_client = boto3.client(
                 service_name="bedrock-runtime",
                 region_name=config.aws_region,
@@ -284,12 +292,28 @@ class EmbeddingFactory:
             return BedrockEmbeddings(client=bedrock_client, model_id=config.model_name)
 
         elif config.provider == EmbeddingProvider.OPENAI:
+            from langchain_community.embeddings import OpenAIEmbeddings
+
             return OpenAIEmbeddings(
                 model=config.model_name, openai_api_key=os.getenv("OPENAI_API_KEY")
             )
 
         elif config.provider == EmbeddingProvider.HUGGINGFACE:
             model_name = get_huggingface_model_path(config.model_name)
+            onnx_model_path = Path(model_name) / "onnx" / "model.onnx"
+            if onnx_model_path.exists():
+                return LocalOnnxEmbeddingFunction(model_dir=Path(model_name))
+
+            try:
+                import torch
+            except Exception as exc:
+                raise ImportError(
+                    "PyTorch is unavailable and no local ONNX embedding model was found. "
+                    "Download a local sentence-transformers model with ONNX exports or fix the torch installation."
+                ) from exc
+
+            from langchain_huggingface import HuggingFaceEmbeddings
+
             device = os.getenv("EMBEDDING_DEVICE") or (
                 "cuda" if torch.cuda.is_available() else "cpu"
             )
@@ -300,3 +324,64 @@ class EmbeddingFactory:
             )
 
         raise ValueError(f"Unsupported embedding provider: {config.provider}")
+
+
+class LocalOnnxEmbeddingFunction:
+    """Local ONNX embedding function for sentence-transformers exports."""
+
+    def __init__(self, model_dir: Path):
+        self.model_dir = Path(model_dir)
+        self.tokenizer = Tokenizer.from_file(str(self.model_dir / "tokenizer.json"))
+        self.max_length = 256
+        self.batch_size = 16
+        self.session = ort.InferenceSession(
+            str(self.model_dir / "onnx" / "model.onnx"),
+            providers=["CPUExecutionProvider"],
+        )
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+
+        embeddings = []
+        for start in range(0, len(texts), self.batch_size):
+            batch_texts = [text or "" for text in texts[start : start + self.batch_size]]
+            embeddings.extend(self._embed_batch(batch_texts))
+        return embeddings
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed_batch([text or ""])[0]
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        encodings = self.tokenizer.encode_batch(texts)
+
+        input_ids = np.array(
+            [encoding.ids[: self.max_length] for encoding in encodings],
+            dtype=np.int64,
+        )
+        attention_mask = np.array(
+            [encoding.attention_mask[: self.max_length] for encoding in encodings],
+            dtype=np.int64,
+        )
+        token_type_ids = np.array(
+            [encoding.type_ids[: self.max_length] for encoding in encodings],
+            dtype=np.int64,
+        )
+
+        outputs = self.session.run(
+            None,
+            {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "token_type_ids": token_type_ids,
+            },
+        )
+        hidden_state = outputs[0]
+        mask = attention_mask[..., None].astype(np.float32)
+        masked_hidden = hidden_state * mask
+        summed = masked_hidden.sum(axis=1)
+        counts = np.clip(mask.sum(axis=1), a_min=1e-9, a_max=None)
+        pooled = summed / counts
+        norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+        normalized = pooled / np.clip(norms, a_min=1e-12, a_max=None)
+        return normalized.tolist()

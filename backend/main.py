@@ -15,22 +15,19 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from services.loading_service import LoadingService
 from services.chunking_service import ChunkingService
-from services.embedding_service import EmbeddingService, EmbeddingConfig
-from services.vector_store_service import VectorStoreService, VectorDBConfig
-from services.search_service import SearchService
 from services.parsing_service import ParsingService
 import logging
 from enum import Enum
 from utils.config import VectorDBProvider
 import pandas as pd
 from pathlib import Path
-from services.generation_service import GenerationService
 from typing import List, Dict, Optional
 from utils.paths import (
     CHUNKED_DOCS_DIR,
     EMBEDDED_DOCS_DIR,
     LOADED_DOCS_DIR,
     SEARCH_RESULTS_DIR,
+    SOURCE_DOCS_DIR,
     TEMP_DIR,
     ensure_runtime_dirs,
     workspace_relative,
@@ -54,9 +51,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-generation_service = GenerationService()
-
 
 @app.post("/process")
 async def process_file(
@@ -86,6 +80,11 @@ async def process_file(
         metadata["total_pages"] = loading_service.get_total_pages()
 
         page_map = loading_service.get_page_map()
+
+        SOURCE_DOCS_DIR.mkdir(parents=True, exist_ok=True)
+        source_copy_path = SOURCE_DOCS_DIR / file.filename
+        with open(source_copy_path, "wb") as source_buffer:
+            source_buffer.write(content)
 
         chunking_service = ChunkingService()
         chunks = chunking_service.chunk_text(
@@ -159,6 +158,8 @@ async def list_documents():
 @app.post("/embed")
 async def embed_document(data: dict = Body(...)):
     try:
+        from services.embedding_service import EmbeddingConfig, EmbeddingService
+
         doc_id = data.get("documentId")
         provider = data.get("provider")
         model = data.get("model")
@@ -263,6 +264,8 @@ async def list_embedded_docs():
 @app.post("/index")
 async def index_embeddings(data: dict):
     try:
+        from services.vector_store_service import VectorStoreService, VectorDBConfig
+
         file_id = data.get("fileId")
         vector_db = data.get("vectorDb")
         index_mode = data.get("indexMode")
@@ -288,6 +291,8 @@ async def index_embeddings(data: dict):
 async def get_providers():
     """获取支持的向量数据库列表"""
     try:
+        from services.search_service import SearchService
+
         search_service = SearchService()
         providers = search_service.get_providers()
         return {"providers": providers}
@@ -303,6 +308,8 @@ async def get_collections(
 ):
     """获取指定向量数据库中的集合"""
     try:
+        from services.search_service import SearchService
+
         search_service = SearchService()
         collections = search_service.list_collections(provider.value)
         return {"collections": collections}
@@ -321,6 +328,8 @@ async def search(
 ):
     """执行向量搜索"""
     try:
+        from services.search_service import SearchService
+
         # Log the incoming search request details
         logger.info(
             f"Search request - Query: {query}, Collection: {collection_id}, Top K: {top_k}, Threshold: {threshold}, Word Count Threshold: {word_count_threshold}"
@@ -352,6 +361,8 @@ async def search(
 async def get_provider_collections(provider: str):
     """Get collections for a specific vector database provider"""
     try:
+        from services.vector_store_service import VectorStoreService
+
         vector_store_service = VectorStoreService()
         collections = vector_store_service.list_collections(provider)
         return {"collections": collections}
@@ -364,6 +375,8 @@ async def get_provider_collections(provider: str):
 async def get_collection_info(provider: str, collection_name: str):
     """Get detailed information about a specific collection"""
     try:
+        from services.vector_store_service import VectorStoreService
+
         vector_store_service = VectorStoreService()
         info = vector_store_service.get_collection_info(provider, collection_name)
         return info
@@ -376,6 +389,8 @@ async def get_collection_info(provider: str, collection_name: str):
 async def delete_collection(provider: str, collection_name: str):
     """Delete a specific collection"""
     try:
+        from services.vector_store_service import VectorStoreService
+
         vector_store_service = VectorStoreService()
         success = vector_store_service.delete_collection(provider, collection_name)
         if success:
@@ -598,7 +613,11 @@ async def parse_file(
 
         parsing_service = ParsingService()
         parsed_content = parsing_service.parse_pdf(
-            raw_text, parsing_option, metadata, page_map=page_map
+            raw_text,
+            parsing_option,
+            metadata,
+            page_map=page_map,
+            file_path=temp_path,
         )
 
         # Clean up temp file
@@ -631,6 +650,7 @@ async def load_file(
             "total_chunks": 0,  # 将在后面更新
             "total_pages": 0,  # 将在后面更新
             "loading_method": loading_method,
+            "source_file": file.filename,
             "loading_strategy": strategy,
             "chunking_strategy": chunking_strategy,
             "timestamp": datetime.now().isoformat(),
@@ -654,6 +674,11 @@ async def load_file(
         metadata["total_pages"] = loading_service.get_total_pages()
 
         page_map = loading_service.get_page_map()
+
+        SOURCE_DOCS_DIR.mkdir(parents=True, exist_ok=True)
+        source_copy_path = SOURCE_DOCS_DIR / file.filename
+        with open(source_copy_path, "wb") as source_buffer:
+            source_buffer.write(content)
 
         # 转换成标准化的chunks格式
         chunks = []
@@ -698,6 +723,7 @@ async def chunk_document(data: dict = Body(...)):
         doc_id = data.get("doc_id")
         chunking_option = data.get("chunking_option")
         chunk_size = data.get("chunk_size", 1000)
+        chunk_source = data.get("chunk_source", "loaded_text")
 
         if not doc_id or not chunking_option:
             raise HTTPException(
@@ -724,21 +750,51 @@ async def chunk_document(data: dict = Body(...)):
             "filename": doc_data["filename"],
             "loading_method": doc_data["loading_method"],
             "total_pages": doc_data["total_pages"],
+            "chunk_source": chunk_source,
         }
 
         chunking_service = ChunkingService()
-        result = chunking_service.chunk_text(
-            text="",  # 不需要传递文本，因为我们使用 page_map
-            method=chunking_option,
-            metadata=metadata,
-            page_map=page_map,
-            chunk_size=chunk_size,
-        )
+        if chunk_source == "structured_blocks":
+            source_filename = doc_data.get("source_file") or doc_data.get("filename")
+            source_path = SOURCE_DOCS_DIR / source_filename
+            if not os.path.exists(source_path):
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Original source PDF not found for structured chunking: {source_filename}. "
+                        "Reload the document to enable structured chunking."
+                    ),
+                )
+
+            loading_service = LoadingService()
+            raw_text = loading_service.load_pdf(source_path, doc_data["loading_method"])
+            parsing_service = ParsingService()
+            parsed = parsing_service.parse_pdf(
+                raw_text,
+                "structured_blocks",
+                metadata,
+                page_map=loading_service.get_page_map(),
+                file_path=source_path,
+            )
+            result = chunking_service.chunk_structured_blocks(
+                blocks=parsed.get("blocks", []),
+                method=chunking_option,
+                metadata=metadata,
+                chunk_size=chunk_size,
+            )
+        else:
+            result = chunking_service.chunk_text(
+                text="",  # 不需要传递文本，因为我们使用 page_map
+                method=chunking_option,
+                metadata=metadata,
+                page_map=page_map,
+                chunk_size=chunk_size,
+            )
 
         # 生成输出文件名
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         base_name = doc_data["filename"].replace(".pdf", "").split("_")[0]
-        output_filename = f"{base_name}_{chunking_option}_{timestamp}.json"
+        output_filename = f"{base_name}_{chunk_source}_{chunking_option}_{timestamp}.json"
 
         output_path = CHUNKED_DOCS_DIR / output_filename
         CHUNKED_DOCS_DIR.mkdir(parents=True, exist_ok=True)
@@ -748,6 +804,8 @@ async def chunk_document(data: dict = Body(...)):
 
         return result
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error chunking document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -762,6 +820,8 @@ async def evaluate_search(
 ):
     try:
         # 读取CSV文件
+        from services.search_service import SearchService
+
         df = pd.read_csv(file.file)
 
         # 只合并前四列的文本内容
@@ -905,6 +965,8 @@ async def evaluate_search(
 @app.post("/save-search")
 async def save_search_results(request: Request):
     try:
+        from services.search_service import SearchService
+
         data = await request.json()
         query = data.get("query")
         collection_id = data.get("collection_id")
@@ -927,6 +989,8 @@ async def save_search_results(request: Request):
 async def get_generation_models():
     """获取可用的生成模型列表"""
     try:
+        from services.generation_service import GenerationService
+
         generation_service = GenerationService()
         models = generation_service.get_available_models()
         return {"models": models}
@@ -947,6 +1011,9 @@ async def generate_response(
 ):
     """生成回答"""
     try:
+        from services.generation_service import GenerationService
+
+        generation_service = GenerationService()
         result = generation_service.generate(
             provider=provider,
             model_name=model_name,

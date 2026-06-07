@@ -2,6 +2,7 @@ import os
 import logging
 from pathlib import Path
 import dotenv
+from utils.paths import WORKSPACE_DIR
 
 dotenv.load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
@@ -18,15 +19,27 @@ def get_huggingface_model_path(model_name: str) -> str:
     Returns:
         str: The local path to the model if it exists, otherwise returns the original model name
     """
-    model_path = os.environ.get("HF_MODEL_PATH")
-    if not model_path or not os.path.exists(model_path):
-        logger.info(f"Using remote model: {model_name}")
-        return model_name
+    candidate_roots = []
+    env_model_path = os.environ.get("HF_MODEL_PATH")
+    if env_model_path:
+        candidate_roots.append(Path(env_model_path))
 
-    local_model_name = os.path.join(model_path, *model_name.split("/"))
-    if os.path.exists(local_model_name):
-        logger.info(f"Using local model: {local_model_name}")
-        return local_model_name
+    # Fall back to common local workspace-relative locations when the
+    # backend process did not inherit the user's HF_MODEL_PATH env var.
+    candidate_roots.extend(
+        [
+            WORKSPACE_DIR / "hfmodel",
+            WORKSPACE_DIR.parent / "hfmodel",
+        ]
+    )
+
+    for candidate_root in candidate_roots:
+        if not candidate_root.exists():
+            continue
+        local_model_name = candidate_root.joinpath(*model_name.split("/"))
+        if local_model_name.exists():
+            logger.info(f"Using local model: {local_model_name}")
+            return str(local_model_name)
 
     logger.info(f"Using remote model: {model_name}")
-    return model_name 
+    return model_name

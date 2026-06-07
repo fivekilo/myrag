@@ -4,6 +4,7 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 WORKSPACE_DIR = BACKEND_DIR.parent
 
 TEMP_DIR = BACKEND_DIR / "temp"
+SOURCE_DOCS_DIR = BACKEND_DIR / "00-source-docs"
 LOADED_DOCS_DIR = BACKEND_DIR / "01-loaded-docs"
 CHUNKED_DOCS_DIR = BACKEND_DIR / "01-chunked-docs"
 EMBEDDED_DOCS_DIR = BACKEND_DIR / "02-embedded-docs"
@@ -14,6 +15,7 @@ GENERATION_RESULTS_DIR = BACKEND_DIR / "05-generation-results"
 
 RUNTIME_DIRS = [
     TEMP_DIR,
+    SOURCE_DOCS_DIR,
     LOADED_DOCS_DIR,
     CHUNKED_DOCS_DIR,
     EMBEDDED_DOCS_DIR,
