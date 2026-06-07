@@ -1,5 +1,4 @@
-// src/pages/Search.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import RandomImage from '../components/RandomImage';
 import { apiBaseUrl } from '../config/config';
 
@@ -12,26 +11,38 @@ const Search = () => {
   const [threshold, setThreshold] = useState(0.7);
   const [collections, setCollections] = useState([]);
   const [providers, setProviders] = useState([]);
-  const [selectedProvider, setSelectedProvider] = useState('milvus');
+  const [selectedProvider, setSelectedProvider] = useState('chroma');
   const [wordCountThreshold, setWordCountThreshold] = useState(100);
   const [saveResults, setSaveResults] = useState(false);
   const [status, setStatus] = useState('');
 
-  // 加载向量数据库providers和collections
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // 获取providers列表
         const providersResponse = await fetch(`${apiBaseUrl}/providers`);
+        if (!providersResponse.ok) {
+          throw new Error(`Failed to load providers: ${providersResponse.status}`);
+        }
         const providersData = await providersResponse.json();
-        setProviders(providersData.providers);
+        const nextProviders = Array.isArray(providersData.providers) ? providersData.providers : [];
+        setProviders(nextProviders);
 
-        // 获取collections列表
+        if (nextProviders.length > 0 && !nextProviders.some((provider) => provider.id === selectedProvider)) {
+          setSelectedProvider(nextProviders[0].id);
+          return;
+        }
+
         const collectionsResponse = await fetch(`${apiBaseUrl}/collections?provider=${selectedProvider}`);
+        if (!collectionsResponse.ok) {
+          throw new Error(`Failed to load collections: ${collectionsResponse.status}`);
+        }
         const collectionsData = await collectionsResponse.json();
-        setCollections(collectionsData.collections);
+        setCollections(Array.isArray(collectionsData.collections) ? collectionsData.collections : []);
       } catch (error) {
         console.error('Error fetching data:', error);
+        setProviders([]);
+        setCollections([]);
+        setStatus(`Error loading search data: ${error.message}`);
       }
     };
 
@@ -40,103 +51,96 @@ const Search = () => {
 
   const handleSearch = async () => {
     if (!query || !collection) {
-      setStatus('请选择集合并输入搜索内容');
+      setStatus('Please choose a collection and enter a search query.');
       return;
     }
 
     setIsSearching(true);
     setStatus('');
-    try {
-      const searchParams = {
-        query,
-        collection_id: collection,
-        top_k: topK,
-        threshold,
-        word_count_threshold: wordCountThreshold,
-        save_results: saveResults
-      };
-      
-      console.log('发送搜索请求:', searchParams);
 
+    try {
       const response = await fetch(`${apiBaseUrl}/search`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
         },
-        body: JSON.stringify(searchParams),
+        body: JSON.stringify({
+          query,
+          collection_id: collection,
+          top_k: topK,
+          threshold,
+          word_count_threshold: wordCountThreshold,
+          save_results: saveResults
+        })
       });
 
+      const data = await response.json();
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error(data.detail || `HTTP error! status: ${response.status}`);
       }
 
-      const data = await response.json();
-      console.log('搜索响应:', data);
+      const nextResults = Array.isArray(data.results?.results)
+        ? data.results.results
+        : Array.isArray(data.results)
+          ? data.results
+          : [];
 
-      if (data.results && data.results.results && data.results.results.length > 0) {
-        setResults(data.results.results);
-        if (saveResults && data.saved_filepath) {
-          setStatus(`搜索完成！结果已保存至: ${data.saved_filepath}`);
-        } else {
-          setStatus('搜索完成！');
-        }
+      setResults(nextResults);
+
+      if (nextResults.length === 0) {
+        setStatus('No matching results were found.');
+      } else if (saveResults && data.saved_filepath) {
+        setStatus(`Search completed. Results saved to ${data.saved_filepath}`);
       } else {
-        setResults([]);
-        setStatus('未找到匹配的结果');
+        setStatus('Search completed.');
       }
     } catch (error) {
-      console.error('搜索错误:', error);
-      setStatus(`搜索出错: ${error.message}`);
+      console.error('Search error:', error);
       setResults([]);
+      setStatus(`Search failed: ${error.message}`);
     } finally {
       setIsSearching(false);
     }
   };
 
-  // 添加保存结果的函数
   const handleSaveResults = async () => {
-    if (!results.length) {
-      setStatus('没有可保存的搜索结果');
+    if (results.length === 0) {
+      setStatus('There are no search results to save.');
       return;
     }
 
     try {
-      const saveParams = {
-        query,
-        collection_id: collection,
-        results: results
-      };
-
-      console.log('发送保存请求:', saveParams);
-      
       const response = await fetch(`${apiBaseUrl}/save-search`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
         },
-        body: JSON.stringify(saveParams),
+        body: JSON.stringify({
+          query,
+          collection_id: collection,
+          results
+        })
       });
 
+      const data = await response.json();
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error(data.detail || `HTTP error! status: ${response.status}`);
       }
 
-      const data = await response.json();
-      setStatus(`结果已保存至: ${data.saved_filepath}`);
+      setStatus(`Results saved to: ${data.saved_filepath}`);
     } catch (error) {
-      console.error('保存错误:', error);
-      setStatus(`保存失败: ${error.message}`);
+      console.error('Save error:', error);
+      setStatus(`Saving failed: ${error.message}`);
     }
   };
 
   return (
     <div className="p-6 text-gray-900">
-      <h1 className="text-blue-500 text-3xl font-bold text-center mb-6"> 检索增强生成工具 </h1>
+      <h1 className="text-blue-500 text-3xl font-bold text-center mb-6">检索增强生成工具</h1>
       <hr />
       <h2 className="text-2xl font-bold mb-6 text-gray-900">相似性检索</h2>
-      
+
       <div className="grid grid-cols-12 gap-6">
-        {/* Left Panel - Search Controls */}
         <div className="col-span-3 space-y-4">
           <div className="p-4 border rounded-lg bg-white shadow-sm text-gray-900">
             <div className="space-y-4">
@@ -151,13 +155,13 @@ const Search = () => {
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-1">向量库</label>
+                <label className="block text-sm font-medium mb-1">向量数据库</label>
                 <select
                   value={selectedProvider}
                   onChange={(e) => setSelectedProvider(e.target.value)}
                   className="block w-full p-2 border rounded text-gray-900 bg-white"
                 >
-                  {providers.map(provider => (
+                  {providers.map((provider) => (
                     <option key={provider.id} value={provider.id}>
                       {provider.name}
                     </option>
@@ -173,7 +177,7 @@ const Search = () => {
                   className="block w-full p-2 border rounded text-gray-900 bg-white"
                 >
                   <option value="">Choose a collection...</option>
-                  {collections.map(coll => (
+                  {collections.map((coll) => (
                     <option key={coll.id} value={coll.id}>
                       {coll.name} ({coll.count} documents)
                     </option>
@@ -182,11 +186,11 @@ const Search = () => {
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-1">前K个检索结果</label>
+                <label className="block text-sm font-medium mb-1">Top K Results</label>
                 <input
                   type="number"
                   value={topK}
-                  onChange={(e) => setTopK(parseInt(e.target.value))}
+                  onChange={(e) => setTopK(parseInt(e.target.value, 10) || 1)}
                   min="1"
                   max="10"
                   className="block w-full p-2 border rounded text-gray-900 bg-white"
@@ -194,9 +198,7 @@ const Search = () => {
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-1">
-                  相似性阈值: {threshold}
-                </label>
+                <label className="block text-sm font-medium mb-1">Similarity Threshold: {threshold}</label>
                 <input
                   type="range"
                   value={threshold}
@@ -209,13 +211,11 @@ const Search = () => {
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-1">
-                  包含最少单词个数: {wordCountThreshold}
-                </label>
+                <label className="block text-sm font-medium mb-1">Minimum Word Count: {wordCountThreshold}</label>
                 <input
                   type="range"
                   value={wordCountThreshold}
-                  onChange={(e) => setWordCountThreshold(parseInt(e.target.value))}
+                  onChange={(e) => setWordCountThreshold(parseInt(e.target.value, 10))}
                   min="0"
                   max="500"
                   step="10"
@@ -228,40 +228,30 @@ const Search = () => {
                   <input
                     type="checkbox"
                     checked={saveResults}
-                    onChange={(e) => {
-                      const newValue = e.target.checked;
-                      console.log('Save Results changed to:', newValue);
-                      setSaveResults(newValue);
-                    }}
+                    onChange={(e) => setSaveResults(e.target.checked)}
                     className="form-checkbox h-4 w-4 text-blue-600"
                   />
-                  <span className="text-sm font-medium">保存检索结果</span>
+                  <span className="text-sm font-medium">保存搜索结果</span>
                 </label>
               </div>
 
-              <button 
-                onClick={() => {
-                  console.log('Search clicked with saveResults:', saveResults);
-                  handleSearch();
-                }}
+              <button
+                onClick={handleSearch}
                 disabled={isSearching}
                 className="w-full px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-blue-300"
               >
-                {isSearching ? '检索过程中...' : '检索'}
+                {isSearching ? 'Searching...' : '搜索'}
               </button>
             </div>
           </div>
 
           {status && (
-            <div className={`p-4 rounded-lg ${
-              status.includes('错误') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
-            }`}>
+            <div className={`p-4 rounded-lg ${status.toLowerCase().includes('error') || status.toLowerCase().includes('failed') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
               {status}
             </div>
           )}
         </div>
 
-        {/* Right Panel - Results */}
         <div className="col-span-9 border rounded-lg bg-white shadow-sm text-gray-900">
           {results.length > 0 ? (
             <div className="p-4 text-gray-900">
@@ -279,15 +269,15 @@ const Search = () => {
                   <div key={idx} className="p-4 border rounded bg-gray-50 text-gray-900">
                     <div className="flex justify-between items-start mb-2">
                       <span className="font-medium text-sm text-gray-500">
-                        Match Score: {(result.score * 100).toFixed(1)}%
+                        Match Score: {typeof result.score === 'number' ? `${(result.score * 100).toFixed(1)}%` : 'N/A'}
                       </span>
                       <div className="text-sm text-gray-500">
-                        <div>Source: {result.metadata.source}</div>
-                        <div>Page: {result.metadata.page}</div>
-                        <div>Chunk: {result.metadata.chunk}</div>
+                        <div>Source: {result.metadata?.source || result.metadata?.filename || 'Unknown'}</div>
+                        <div>Page: {result.metadata?.page || result.metadata?.page_number || 'N/A'}</div>
+                        <div>Chunk: {result.metadata?.chunk || result.metadata?.chunk_id || 'N/A'}</div>
                       </div>
                     </div>
-                    <p className="text-sm whitespace-pre-wrap text-gray-900">{result.text}</p>
+                    <p className="text-sm whitespace-pre-wrap text-gray-900">{result.text || result.metadata?.content || ''}</p>
                   </div>
                 ))}
               </div>

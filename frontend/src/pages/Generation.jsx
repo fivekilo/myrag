@@ -1,18 +1,24 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import RandomImage from '../components/RandomImage';
-import { apiBaseUrl } from '../config/config';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { apiBaseUrl } from '../config/config';
 
-const MarkdownViewer = ({ markdownText }) => {
-  return (
-    <div className="markdown-container">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdownText}</ReactMarkdown>
-    </div>
-  );
+const MarkdownViewer = ({ markdownText }) => (
+  <div className="markdown-container">
+    <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdownText || ''}</ReactMarkdown>
+  </div>
+);
+
+const getModelDisplayName = (id, fallbackName) => {
+  if (id === 'deepseek-v4-flash') return 'DeepSeek V4 Flash';
+  if (id === 'deepseek-v4-pro') return 'DeepSeek V4 Pro';
+  if (id === 'deepseek-chat') return 'DeepSeek Chat';
+  if (id === 'deepseek-reasoner') return 'DeepSeek Reasoner';
+  if (id === 'deepseek-v3') return 'DeepSeek V3';
+  if (id === 'deepseek-r1') return 'DeepSeek R1';
+  return fallbackName || id;
 };
-
 
 const Generation = () => {
   const location = useLocation();
@@ -30,59 +36,82 @@ const Generation = () => {
   const [showReasoning, setShowReasoning] = useState(true);
   const [loadModel, setLoadModel] = useState(false);
 
-  // 加载可用模型列表和搜索结果文件列表
+  const currentProviderModels = useMemo(() => {
+    return Object.entries(models?.[provider] || {});
+  }, [models, provider]);
+
+  const hasSearchContext = Array.isArray(searchResults) && searchResults.length > 0;
+
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // 获取模型列表
-        const modelsResponse = await fetch(`${apiBaseUrl}/generation/models`);
-        const modelsData = await modelsResponse.json();
-        setModels(modelsData.models);
+        const [modelsResponse, filesResponse] = await Promise.all([
+          fetch(`${apiBaseUrl}/generation/models`),
+          fetch(`${apiBaseUrl}/search-results`),
+        ]);
 
-        // 获取搜索结果文件列表
-        const filesResponse = await fetch(`${apiBaseUrl}/search-results`);
+        if (!modelsResponse.ok) {
+          throw new Error(`加载模型列表失败: ${modelsResponse.status}`);
+        }
+        if (!filesResponse.ok) {
+          throw new Error(`加载检索结果列表失败: ${filesResponse.status}`);
+        }
+
+        const modelsData = await modelsResponse.json();
         const filesData = await filesResponse.json();
-        setSearchFiles(filesData.files);
+
+        setModels(modelsData?.models || {});
+        setSearchFiles(Array.isArray(filesData?.files) ? filesData.files : []);
       } catch (error) {
         console.error('Error fetching data:', error);
-        setStatus('获取数据失败');
+        setStatus(`获取数据失败: ${error.message}`);
       }
     };
 
     fetchData();
   }, []);
 
-  // 加载选中的搜索结果文件内容
   useEffect(() => {
     const loadSearchResults = async () => {
       if (!selectedFile) {
-        setQuery('');
-        setSearchResults([]);
         return;
       }
 
       try {
-        const response = await fetch(`${apiBaseUrl}/search-results/${selectedFile}`);
-        const data = await response.json();
-        setQuery(data.query);
-        setSearchResults(data.results);
+        const resultResponse = await fetch(`${apiBaseUrl}/search-results/${selectedFile}`);
+        if (!resultResponse.ok) {
+          throw new Error(`加载检索结果失败: ${resultResponse.status}`);
+        }
+
+        const data = await resultResponse.json();
+        setQuery(data?.query || '');
+        setSearchResults(Array.isArray(data?.results) ? data.results : []);
       } catch (error) {
         console.error('Error loading search results:', error);
-        setStatus('加载搜索结果失败');
+        setStatus(`加载搜索结果失败: ${error.message}`);
       }
     };
 
     loadSearchResults();
   }, [selectedFile]);
 
-  // 如果从搜索页面跳转过来，获取搜索结果
   useEffect(() => {
-    if (location.state) {
-      const { query: searchQuery, results } = location.state;
-      if (searchQuery) setQuery(searchQuery);
-      if (results) setSearchResults(results);
+    if (!location.state) {
+      return;
+    }
+
+    const { query: searchQuery, results } = location.state;
+    if (searchQuery) {
+      setQuery(searchQuery);
+    }
+    if (Array.isArray(results)) {
+      setSearchResults(results);
     }
   }, [location]);
+
+  useEffect(() => {
+    setModelName('');
+  }, [provider]);
 
   const handleGenerate = async () => {
     if (!provider || !modelName) {
@@ -90,15 +119,16 @@ const Generation = () => {
       return;
     }
 
-    if (!query /*|| searchResults.length === 0 */) {
+    if (!query.trim()) {
       setStatus('请输入问题并确保有搜索结果');
       return;
     }
 
     setIsGenerating(true);
     setStatus('');
+
     try {
-      const response = await fetch(`${apiBaseUrl}/generate`, {
+      const generateResponse = await fetch(`${apiBaseUrl}/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -107,21 +137,22 @@ const Generation = () => {
           query,
           provider,
           model_name: modelName,
-          search_results: searchResults,
+          search_results: Array.isArray(searchResults) ? searchResults : [],
           load_model: loadModel,
           api_key: apiKey || null,
           show_reasoning: showReasoning,
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await generateResponse.json();
+      if (!generateResponse.ok) {
+        throw new Error(data?.detail || `HTTP error! status: ${generateResponse.status}`);
       }
 
-      const data = await response.json();
-      setResponse(data.response);
-      setLoadModel(false);
-      setStatus(`生成完成！modelStatus: ${loadModel} 结果已保存至: ${data.saved_filepath}`);
+      setResponse(data?.response || '');
+      setStatus(
+        `生成完成！modelStatus: ${loadModel} 结果已保存至: ${data?.saved_filepath || '未返回路径'}`
+      );
     } catch (error) {
       console.error('Generation error:', error);
       setStatus(`生成失败: ${error.message}`);
@@ -138,7 +169,6 @@ const Generation = () => {
       <h2 className="text-2xl font-bold mb-6 text-gray-900">响应生成</h2>
 
       <div className="grid grid-cols-12 gap-6">
-        {/* Left Panel - Generation Controls */}
         <div className="col-span-4 space-y-4">
           <div className="p-4 border rounded-lg bg-white shadow-sm text-gray-900">
             <div className="space-y-4">
@@ -160,7 +190,7 @@ const Generation = () => {
                   className="block w-full p-2 border rounded text-gray-900 bg-white"
                 >
                   <option value="">Select search results file...</option>
-                  {searchFiles.map(file => (
+                  {searchFiles.map((file) => (
                     <option key={file.id} value={file.id}>
                       {file.name}
                     </option>
@@ -168,128 +198,132 @@ const Generation = () => {
                 </select>
               </div>
 
-              {/*selectedFile && */ (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium mb-1">生成模型提供方</label>
-                    <select
-                      value={provider}
-                      onChange={(e) => setProvider(e.target.value)}
-                      className="block w-full p-2 border rounded text-gray-900 bg-white"
-                    >
-                      <option value="">Select provider...</option>
-                      {Object.keys(models).map(p => (
-                        <option key={p} value={p}>{p}</option>
-                      ))}
-                    </select>
-                  </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">生成模型提供方</label>
+                <select
+                  value={provider}
+                  onChange={(e) => setProvider(e.target.value)}
+                  className="block w-full p-2 border rounded text-gray-900 bg-white"
+                >
+                  <option value="">Select provider...</option>
+                  {Object.keys(models || {}).map((providerKey) => (
+                    <option key={providerKey} value={providerKey}>
+                      {providerKey}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-                  {provider && (
-                    <div>
-                      <label className="block text-sm font-medium mb-1">生成模型</label>
-                      <select
-                        value={modelName}
-                        onChange={(e) => { setModelName(e.target.value); setLoadModel(true) }}
-                        className="block w-full p-2 border rounded text-gray-900 bg-white"
-                      >
-                        <option value="">Select model...</option>
-                        {Object.entries(models[provider] || {}).map(([id, name]) => (
-                          <option key={id} value={id}>
-                            {id === 'deepseek-v4-flash' ? 'DeepSeek V4 Flash' :
-                              id === 'deepseek-v4-pro' ? 'DeepSeek V4 Pro' :
-                                id === 'deepseek-chat' ? 'DeepSeek Chat (legacy alias)' :
-                                  id === 'deepseek-reasoner' ? 'DeepSeek Reasoner (legacy alias)' :
-                                    name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
-                  {(provider === 'openai' || provider === 'deepseek') && (
-                    <div>
-                      <label className="block text-sm font-medium mb-1">API Key</label>
-                      <input
-                        type="password"
-                        value={apiKey}
-                        onChange={(e) => setApiKey(e.target.value)}
-                        placeholder="Enter your API key..."
-                        className="block w-full p-2 border rounded text-gray-900 bg-white"
-                      />
-                    </div>
-                  )}
-
-                  {provider === 'deepseek' && modelName && (
-                    <div className="flex items-center space-x-2">
-                      <input
-                        type="checkbox"
-                        id="showReasoning"
-                        checked={showReasoning}
-                        onChange={(e) => setShowReasoning(e.target.checked)}
-                        className="rounded border-gray-300 text-green-500 focus:ring-green-500"
-                      />
-                      <label htmlFor="showReasoning" className="text-sm font-medium">
-                        显示思维链过程
-                      </label>
-                    </div>
-                  )}
-
-                  <button
-                    onClick={handleGenerate}
-                    disabled={isGenerating}
-                    className="w-full px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-green-300"
+              {provider && (
+                <div>
+                  <label className="block text-sm font-medium mb-1">生成模型</label>
+                  <select
+                    value={modelName}
+                    onChange={(e) => {
+                      setModelName(e.target.value);
+                      setLoadModel(true);
+                    }}
+                    className="block w-full p-2 border rounded text-gray-900 bg-white"
                   >
-                    {isGenerating ? '生成回答中...' : '生成回答'}
-                  </button>
+                    <option value="">Select model...</option>
+                    {currentProviderModels.map(([id, name]) => (
+                      <option key={id} value={id}>
+                        {getModelDisplayName(id, name)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
-                  {status && (
-                    <div className={`p-4 rounded-lg ${status.includes('失败') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
-                      }`}>
-                      {status}
-                    </div>
-                  )}
-                </>
+              {(provider === 'openai' || provider === 'deepseek') && (
+                <div>
+                  <label className="block text-sm font-medium mb-1">API Key</label>
+                  <input
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="Enter your API key..."
+                    className="block w-full p-2 border rounded text-gray-900 bg-white"
+                  />
+                </div>
+              )}
+
+              {provider === 'deepseek' &&
+                modelName &&
+                (modelName === 'deepseek-r1' || modelName === 'deepseek-reasoner') && (
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="showReasoning"
+                      checked={showReasoning}
+                      onChange={(e) => setShowReasoning(e.target.checked)}
+                      className="rounded border-gray-300 text-green-500 focus:ring-green-500"
+                    />
+                    <label htmlFor="showReasoning" className="text-sm font-medium">
+                      显示思维链过程
+                    </label>
+                  </div>
+                )}
+
+              <button
+                onClick={handleGenerate}
+                disabled={isGenerating}
+                className="w-full px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-green-300"
+              >
+                {isGenerating ? '生成回答中...' : '生成回答'}
+              </button>
+
+              {status && (
+                <div
+                  className={`p-4 rounded-lg ${
+                    status.includes('失败') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                  }`}
+                >
+                  {status}
+                </div>
               )}
             </div>
           </div>
         </div>
 
-        {/* Right Panel - Context and Response */}
         <div className="col-span-8">
-          {selectedFile ? (
-            <>
-              {/* Search Results Context */}
-              <div className="mb-6 p-4 border rounded-lg bg-white shadow-sm text-gray-900">
-                <h3 className="text-xl font-semibold mb-4 text-gray-900">检索的上下文</h3>
-                <div className="space-y-4 max-h-[300px] overflow-y-auto">
-                  {searchResults.map((result, idx) => (
-                    <div key={idx} className="p-4 border rounded bg-gray-50 text-gray-900">
+          {hasSearchContext ? (
+            <div className="mb-6 p-4 border rounded-lg bg-white shadow-sm text-gray-900">
+              <h3 className="text-xl font-semibold mb-4 text-gray-900">检索的上下文</h3>
+              <div className="space-y-4 max-h-[300px] overflow-y-auto">
+                {searchResults.map((result, idx) => {
+                  const metadata = result?.metadata || {};
+                  const score = typeof result?.score === 'number' ? result.score : 0;
+                  return (
+                    <div key={`${idx}-${metadata.page || 'na'}`} className="p-4 border rounded bg-gray-50 text-gray-900">
                       <div className="flex justify-between items-start mb-2">
                         <span className="font-medium text-sm text-gray-500">
-                          Match Score: {(result.score * 100).toFixed(1)}%
+                          Match Score: {(score * 100).toFixed(1)}%
                         </span>
                         <div className="text-sm text-gray-500">
-                          <div>Source: {result.metadata.source}</div>
-                          <div>Page: {result.metadata.page}</div>
+                          <div>Source: {metadata.source || 'N/A'}</div>
+                          <div>Page: {metadata.page || metadata.page_number || 'N/A'}</div>
                         </div>
                       </div>
-                      <p className="text-sm whitespace-pre-wrap text-gray-900">{result.text}</p>
+                      <p className="text-sm whitespace-pre-wrap text-gray-900">{result?.text || ''}</p>
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
-            </>
+            </div>
           ) : (
             <div className="mb-6 p-4 border rounded-lg bg-white shadow-sm text-gray-900">
               <h3 className="text-xl font-semibold mb-4 text-gray-900">无检索上下文</h3>
             </div>
           )}
-          {/* Generated Response */}
+
           {response && (
             <div className="p-4 border rounded-lg bg-white shadow-sm text-gray-900">
               <h3 className="text-xl font-semibold mb-4 text-gray-900">生成的回答</h3>
               <div className="p-4 border rounded bg-gray-50 text-gray-900">
-                <div className="whitespace-pre-wrap text-gray-900"><MarkdownViewer markdownText={response} /></div>
+                <div className="whitespace-pre-wrap text-gray-900">
+                  <MarkdownViewer markdownText={response} />
+                </div>
               </div>
             </div>
           )}
@@ -299,4 +333,4 @@ const Generation = () => {
   );
 };
 
-export default Generation; 
+export default Generation;

@@ -1,5 +1,4 @@
-// src/pages/Indexing.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import RandomImage from '../components/RandomImage';
 import { apiBaseUrl } from '../config/config';
 
@@ -12,32 +11,16 @@ const Indexing = () => {
   const [indexingResult, setIndexingResult] = useState(null);
   const [collections, setCollections] = useState([]);
   const [selectedCollection, setSelectedCollection] = useState('');
-  const [collectionDetails, setCollectionDetails] = useState(null);
   const [providers, setProviders] = useState([]);
-  //const [selectedProvider, setSelectedProvider] = useState('milvus');
   const [selectedProvider, setSelectedProvider] = useState('chroma');
 
-
-  // 数据库和索引模式的配置
   const dbConfigs = {
-    pinecone: {
-      modes: ['standard', 'hybrid']
-    },
-    milvus: {
-      modes: ['flat', 'ivf_flat', 'ivf_sq8', 'hnsw']
-    },
-    qdrant: {
-      modes: ['hnsw', 'custom']
-    },
-    weaviate: {
-      modes: ['hnsw', 'flat']
-    },
-    chroma: {
-      modes: ['hnsw', 'standard']
-    },
-    faiss: {
-      modes: ['flat', 'ivf', 'hnsw']
-    }
+    pinecone: { modes: ['standard', 'hybrid'] },
+    milvus: { modes: ['flat', 'ivf_flat', 'ivf_sq8', 'hnsw'] },
+    qdrant: { modes: ['hnsw', 'custom'] },
+    weaviate: { modes: ['hnsw', 'flat'] },
+    chroma: { modes: ['hnsw', 'standard'] },
+    faiss: { modes: ['flat', 'ivf', 'hnsw'] }
   };
 
   useEffect(() => {
@@ -45,8 +28,8 @@ const Indexing = () => {
   }, []);
 
   useEffect(() => {
-    // 当数据库改变时，重置索引模式为该数据库的第一个可用模式
-    setIndexMode(dbConfigs[vectorDb].modes[0]);
+    const nextModes = dbConfigs[vectorDb]?.modes || ['standard'];
+    setIndexMode(nextModes[0]);
   }, [vectorDb]);
 
   useEffect(() => {
@@ -56,17 +39,30 @@ const Indexing = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // 获取providers列表
         const providersResponse = await fetch(`${apiBaseUrl}/providers`);
+        if (!providersResponse.ok) {
+          throw new Error(`Failed to load providers: ${providersResponse.status}`);
+        }
         const providersData = await providersResponse.json();
-        setProviders(providersData.providers);
+        const nextProviders = Array.isArray(providersData.providers) ? providersData.providers : [];
+        setProviders(nextProviders);
 
-        // 获取collections列表
+        if (nextProviders.length > 0 && !nextProviders.some((provider) => provider.id === selectedProvider)) {
+          setSelectedProvider(nextProviders[0].id);
+          return;
+        }
+
         const collectionsResponse = await fetch(`${apiBaseUrl}/collections?provider=${selectedProvider}`);
+        if (!collectionsResponse.ok) {
+          throw new Error(`Failed to load collections: ${collectionsResponse.status}`);
+        }
         const collectionsData = await collectionsResponse.json();
-        setCollections(collectionsData.collections);
+        setCollections(Array.isArray(collectionsData.collections) ? collectionsData.collections : []);
       } catch (error) {
         console.error('Error fetching data:', error);
+        setProviders([]);
+        setCollections([]);
+        setStatus(`Error loading indexing data: ${error.message}`);
       }
     };
 
@@ -76,17 +72,22 @@ const Indexing = () => {
   const fetchEmbeddedFiles = async () => {
     try {
       const response = await fetch(`${apiBaseUrl}/list-embedded`);
+      if (!response.ok) {
+        throw new Error(`Failed to load embedded files: ${response.status}`);
+      }
       const data = await response.json();
-      if (data.documents) {
-        setEmbeddedFiles(data.documents.map(doc => ({
+      const documents = Array.isArray(data.documents) ? data.documents : [];
+      setEmbeddedFiles(
+        documents.map((doc) => ({
           ...doc,
           id: doc.name,
           displayName: doc.name
-        })));
-      }
+        }))
+      );
     } catch (error) {
       console.error('Error fetching embedded files:', error);
-      setStatus('Error loading embedding files');
+      setEmbeddedFiles([]);
+      setStatus(`Error loading embedding files: ${error.message}`);
     }
   };
 
@@ -97,10 +98,11 @@ const Indexing = () => {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       const data = await response.json();
-      setCollections(data.collections || []);
+      setCollections(Array.isArray(data.collections) ? data.collections : []);
     } catch (error) {
       console.error('Error fetching collections:', error);
-      setStatus('Error loading collections');
+      setCollections([]);
+      setStatus(`Error loading collections: ${error.message}`);
     }
   };
 
@@ -115,17 +117,16 @@ const Indexing = () => {
       const response = await fetch(`${apiBaseUrl}/index`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           fileId: embeddingFile,
           vectorDb: selectedProvider,
           indexMode
-        }),
+        })
       });
 
       const data = await response.json();
-
       if (!response.ok) {
         throw new Error(data.detail || `HTTP error! status: ${response.status}`);
       }
@@ -139,12 +140,14 @@ const Indexing = () => {
     } catch (error) {
       console.error('Error indexing:', error);
       setIndexingResult(null);
-      setStatus('Error during indexing: ' + error.message);
+      setStatus(`Error during indexing: ${error.message}`);
     }
   };
 
   const handleDisplay = async (collectionName) => {
-    if (!collectionName) return;
+    if (!collectionName) {
+      return;
+    }
 
     try {
       const response = await fetch(`${apiBaseUrl}/collections/${selectedProvider}/${collectionName}`);
@@ -154,77 +157,67 @@ const Indexing = () => {
         throw new Error(data.detail || `HTTP error! status: ${response.status}`);
       }
 
-      // 只包含有实际值的属性
-      const result = {
+      setIndexingResult({
         database: selectedProvider,
         collection_name: data.name,
         total_vectors: data.num_entities,
-        index_size: data.num_entities
-      };
-
-      // 只在有实际值时添加可选属性
-      //const indexType="hnsw"
-
-      // const indexType = data.schema?.fields?.find(f => f.name === 'vector')?.index_params?.index_type;
-      // if (indexType) {
-      //   result.index_mode = indexType;
-      // }
-
-      if (data.processing_time) {
-        result.processing_time = data.processing_time;
-      }
-
-      setIndexingResult(result);
+        index_size: data.num_entities,
+        processing_time: data.processing_time
+      });
       setStatus('Collection loaded successfully');
     } catch (error) {
       console.error('Error displaying collection:', error);
-      setStatus('Error displaying collection: ' + error.message);
+      setStatus(`Error displaying collection: ${error.message}`);
     }
   };
 
   const handleDelete = async (collectionName) => {
-    if (!collectionName) return;
+    if (!collectionName) {
+      return;
+    }
 
-    if (window.confirm(`Are you sure you want to delete collection "${collectionName}"?`)) {
-      try {
-        const response = await fetch(`${apiBaseUrl}/collections/${selectedProvider}/${collectionName}`, {
-          method: 'DELETE',
-        });
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.detail || `HTTP error! status: ${response.status}`);
-        }
-        setSelectedCollection('');
-        // 重新获取collections列表
-        await fetchCollections();
-        setStatus('Collection deleted successfully');
-      } catch (error) {
-        console.error('Error deleting collection:', error);
-        setStatus('Error deleting collection: ' + error.message);
+    if (!window.confirm(`Are you sure you want to delete collection "${collectionName}"?`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/collections/${selectedProvider}/${collectionName}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || `HTTP error! status: ${response.status}`);
       }
+
+      setSelectedCollection('');
+      setIndexingResult(null);
+      await fetchCollections();
+      setStatus('Collection deleted successfully');
+    } catch (error) {
+      console.error('Error deleting collection:', error);
+      setStatus(`Error deleting collection: ${error.message}`);
     }
   };
 
   return (
     <div className="p-6 text-gray-900">
-      <h1 className="text-blue-500 text-3xl font-bold text-center mb-6"> 检索增强生成工具 </h1>
+      <h1 className="text-blue-500 text-3xl font-bold text-center mb-6">检索增强生成工具</h1>
       <hr />
       <h2 className="text-2xl font-bold mb-6 text-gray-900">向量库索引</h2>
 
       <div className="grid grid-cols-12 gap-6">
-        {/* Left Panel - Controls */}
         <div className="col-span-3">
           <div className="p-4 border rounded-lg bg-white shadow-sm space-y-4 text-gray-900">
-            {/* Embedding File Selection */}
             <div>
-              <label className="block text-sm font-medium mb-1">需要索引的文件</label>
+              <label className="block text-sm font-medium mb-1">待索引的嵌入文件</label>
               <select
                 value={embeddingFile}
                 onChange={(e) => setEmbeddingFile(e.target.value)}
                 className="block w-full p-2 border rounded text-gray-900 bg-white"
               >
                 <option value="">Choose a file...</option>
-                {embeddedFiles.map(file => (
+                {embeddedFiles.map((file) => (
                   <option key={file.name} value={file.name}>
                     {file.displayName}
                   </option>
@@ -232,15 +225,14 @@ const Indexing = () => {
               </select>
             </div>
 
-            {/* Vector Database Selection */}
             <div>
-              <label className="block text-sm font-medium mb-1">向量库</label>
+              <label className="block text-sm font-medium mb-1">向量数据库</label>
               <select
                 value={selectedProvider}
                 onChange={(e) => setSelectedProvider(e.target.value)}
                 className="block w-full p-2 border rounded text-gray-900 bg-white"
               >
-                {providers.map(provider => (
+                {providers.map((provider) => (
                   <option key={provider.id} value={provider.id}>
                     {provider.name}
                   </option>
@@ -248,7 +240,6 @@ const Indexing = () => {
               </select>
             </div>
 
-            {/* Index Mode Selection */}
             <div>
               <label className="block text-sm font-medium mb-1">索引模式</label>
               <select
@@ -256,7 +247,7 @@ const Indexing = () => {
                 onChange={(e) => setIndexMode(e.target.value)}
                 className="block w-full p-2 border rounded text-gray-900 bg-white"
               >
-                {dbConfigs[vectorDb].modes.map(mode => (
+                {(dbConfigs[vectorDb]?.modes || ['standard']).map((mode) => (
                   <option key={mode} value={mode}>
                     {mode.toUpperCase()}
                   </option>
@@ -264,18 +255,15 @@ const Indexing = () => {
               </select>
             </div>
 
-            {/* Action Buttons and Collection Management */}
             <div className="space-y-2">
-              {/* Index Data Button */}
               <button
                 onClick={handleIndex}
                 className="w-full px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-blue-300"
                 disabled={!embeddingFile}
               >
-                索引数据
+                执行索引
               </button>
 
-              {/* Collection Selection */}
               <div>
                 <label className="block text-sm font-medium mb-1">索引集合</label>
                 <select
@@ -284,7 +272,7 @@ const Indexing = () => {
                   className="block w-full p-2 border rounded text-gray-900 bg-white"
                 >
                   <option value="">Choose a collection...</option>
-                  {collections.map(coll => (
+                  {collections.map((coll) => (
                     <option key={coll.id} value={coll.id}>
                       {coll.name} ({coll.count} documents)
                     </option>
@@ -292,16 +280,14 @@ const Indexing = () => {
                 </select>
               </div>
 
-              {/* Display Collection Button */}
               <button
                 onClick={() => handleDisplay(selectedCollection)}
                 disabled={!selectedCollection}
                 className="w-full px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-blue-300"
               >
-                显示集合
+                查看集合
               </button>
 
-              {/* Delete Collection Button */}
               <button
                 onClick={() => handleDelete(selectedCollection)}
                 disabled={!selectedCollection}
@@ -319,7 +305,6 @@ const Indexing = () => {
           </div>
         </div>
 
-        {/* Right Panel - Results */}
         <div className="col-span-9 border rounded-lg bg-white shadow-sm text-gray-900">
           {indexingResult ? (
             <div className="p-4 text-gray-900">
@@ -328,14 +313,10 @@ const Indexing = () => {
                 <div className="p-3 border rounded bg-gray-50">
                   <div className="text-sm text-gray-700">
                     <p>Database: {indexingResult.database}</p>
-                    {indexingResult.index_mode && (
-                      <p>Index Mode: {indexingResult.index_mode}</p>
-                    )}
+                    {indexingResult.index_mode && <p>Index Mode: {indexingResult.index_mode}</p>}
                     <p>Total Vectors: {indexingResult.total_vectors}</p>
                     <p>Index Size: {indexingResult.index_size}</p>
-                    {indexingResult.processing_time && (
-                      <p>Processing Time: {indexingResult.processing_time}s</p>
-                    )}
+                    {indexingResult.processing_time && <p>Processing Time: {indexingResult.processing_time}s</p>}
                     <p>Collection Name: {indexingResult.collection_name}</p>
                   </div>
                 </div>

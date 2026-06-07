@@ -1,12 +1,20 @@
 from pypdf import PdfReader
-from unstructured.partition.pdf import partition_pdf
-import pdfplumber
 import fitz  # PyMuPDF
 import logging
 import os
 from datetime import datetime
 import json
 from utils.paths import LOADED_DOCS_DIR
+
+try:
+    from unstructured.partition.pdf import partition_pdf
+except ImportError:  # pragma: no cover - optional dependency in current workspace
+    partition_pdf = None
+
+try:
+    import pdfplumber
+except ImportError:  # pragma: no cover - optional dependency in current workspace
+    pdfplumber = None
 
 logger = logging.getLogger(__name__)
 """
@@ -177,6 +185,12 @@ class LoadingService:
             str: 提取的文本内容
         """
         try:
+            if partition_pdf is None:
+                raise ImportError(
+                    "unstructured PDF dependencies are not installed. "
+                    "Install the optional unstructured/pdfminer stack to use this method."
+                )
+
             strategy_params = {
                 "fast": {"strategy": "fast"},
                 "hi_res": {"strategy": "hi_res"},
@@ -278,6 +292,11 @@ class LoadingService:
         """
         text_blocks = []
         try:
+            if pdfplumber is None:
+                raise ImportError(
+                    "pdfplumber is not installed. Install it to use the pdfplumber loading method."
+                )
+
             with pdfplumber.open(file_path) as pdf:
                 self.total_pages = len(pdf.pages)
                 for page_num, page in enumerate(pdf.pages, 1):
@@ -331,6 +350,7 @@ class LoadingService:
                 "total_chunks": int(len(chunks)),
                 "total_pages": int(metadata.get("total_pages", 1)),
                 "loading_method": str(loading_method),
+                "source_file": str(metadata.get("source_file", filename)),
                 "loading_strategy": (
                     str(strategy)
                     if loading_method == "unstructured" and strategy
