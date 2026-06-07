@@ -326,6 +326,59 @@ AI回复：{responseInfo}
             logger.error(f"Error generating with DeepSeek: {str(e)}")
             raise
 
+    def _critique_and_correct(
+        self,
+        query: str,
+        context: str,
+        draft_response: str,
+        provider: str,
+        model_name: str,
+        api_key: Optional[str] = None,
+    ) -> str:
+        """Check whether the draft is grounded in context, and rewrite it if needed."""
+        prompt = f"""你是一个严格的纠错审查员。
+请检查【回答草案】是否准确且严格地基于给定的【上下文】来回答了【问题】。
+
+【问题】: {query}
+【上下文】: {context}
+【回答草案】: {draft_response}
+
+评判规则：
+1. 如果草案里捏造了上下文没有的数据（幻觉），或者未回答问题，请输出：[CORRECTED] 加上基于上下文重写后的严谨回答。
+2. 如果草案本身已经很好基于了上下文，并且准确无误，请只输出：[PASS]。
+"""
+
+        try:
+            if provider == "aliyun":
+                critique = self._generate_with_aliyun(
+                    model_name, prompt, "[NO CONTEXT NEEDED]", api_key
+                )
+            elif provider == "deepseek":
+                critique = self._generate_with_deepseek(
+                    model_name,
+                    prompt,
+                    "[NO CONTEXT NEEDED]",
+                    api_key,
+                    show_reasoning=False,
+                )
+            else:
+                logger.info(f"Critique skipped for unsupported provider: {provider}")
+                return draft_response
+
+            if "[PASS]" in critique:
+                logger.info("Critique passed. Using original draft.")
+                return draft_response
+
+            if "[CORRECTED]" in critique:
+                logger.info("Critique found issues. Using corrected response.")
+                return critique.split("[CORRECTED]", 1)[-1].strip()
+
+            logger.info("Critique returned no clear marker. Using original draft.")
+            return draft_response
+        except Exception as e:
+            logger.error(f"Correction failed: {e}")
+            return draft_response
+
     def generate(
         self,
         provider: str,
@@ -377,13 +430,18 @@ AI回复：{responseInfo}
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
 
+            logger.info("Starting Critique & Correct phase...")
+            final_response = self._critique_and_correct(
+                query, context, response, provider, model_name, api_key
+            )
+
             # 准备保存的结果
             result = {
                 "query": query,
                 "timestamp": datetime.now().isoformat(),
                 "provider": provider,
                 "model": model_name,
-                "response": response,
+                "response": final_response,
                 "context": search_results,
             }
 
@@ -397,7 +455,7 @@ AI回复：{responseInfo}
                 json.dump(result, f, ensure_ascii=False, indent=2)
 
             return {
-                "response": response,
+                "response": final_response,
                 "saved_filepath": workspace_relative(filepath),
             }
 
