@@ -568,6 +568,21 @@ class VectorStoreService:
                     "total_chunks": int(emb["metadata"].get("total_chunks", 0)),
                     "page_number": str(emb["metadata"].get("page_number", 0)),
                     "page_range": str(emb["metadata"].get("page_range", "")),
+                    "embedding_provider": str(
+                        emb["metadata"].get(
+                            "embedding_provider",
+                            embeddings_data.get("embedding_provider", "unknown"),
+                        )
+                    ),
+                    "embedding_model": str(
+                        emb["metadata"].get(
+                            "embedding_model",
+                            embeddings_data.get("embedding_model", "unknown"),
+                        )
+                    ),
+                    "embedding_timestamp": str(
+                        emb["metadata"].get("embedding_timestamp", "")
+                    ),
                 }
                 metadata_list.append(entity)
 
@@ -598,8 +613,11 @@ class VectorStoreService:
             faiss_dir.mkdir(parents=True, exist_ok=True)
 
             # 1. 写入物理索引文件
+            # 避免 Windows 下 FAISS 直接处理包含中文的路径时打开文件失败。
             index_file_path = faiss_dir / f"{collection_name}.index"
-            faiss.write_index(index, str(index_file_path))
+            serialized_index = faiss.serialize_index(index)
+            with open(index_file_path, "wb") as f:
+                f.write(serialized_index.tobytes())
 
             # 2. 写入对应的元数据JSON文件
             metadata_file_path = faiss_dir / f"{collection_name}_metadata.json"
