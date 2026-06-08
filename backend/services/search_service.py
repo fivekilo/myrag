@@ -1,6 +1,8 @@
 from typing import List, Dict, Any, Optional
 import logging
 from datetime import datetime
+from pathlib import Path
+import dotenv
 from pymilvus import connections, Collection, utility
 from openai import OpenAI
 from services.embedding_service import EmbeddingService
@@ -10,6 +12,8 @@ import json
 from pymilvus import MilvusClient, exceptions
 import chromadb
 from utils.paths import CHROMADB_DIR, SEARCH_RESULTS_DIR, workspace_relative
+
+dotenv.load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 chromadb_path = str(CHROMADB_DIR)
 
