@@ -291,7 +291,7 @@ class SearchService:
                                 "metadata": {
                                     "source": item.get("document_name"),
                                     "page": item.get("page_number"),
-                                    "chunk": idx,
+                                    "chunk": int(idx),  # 【修改此处：强转为 Python 标准 int 即可修复】
                                     "total_chunks": item.get("total_chunks"),
                                     "page_range": item.get("page_range"),
                                     "embedding_provider": provider,
