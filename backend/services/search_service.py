@@ -260,7 +260,10 @@ class SearchService:
                 logger.info(f"FAISS Multi-query expansion variants: {queries}")
 
                 # 3. 读取本地物理索引
-                index = faiss.read_index(str(faiss_index_path))
+                # 避免 Windows 下 FAISS 直接处理包含中文的路径时打开文件失败。
+                with open(faiss_index_path, "rb") as f:
+                    index_bytes = f.read()
+                index = faiss.deserialize_index(np.frombuffer(index_bytes, dtype=np.uint8))
                 processed_results = []
                 seen_chunk_ids = set()
 
