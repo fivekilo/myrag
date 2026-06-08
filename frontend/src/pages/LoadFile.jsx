@@ -21,6 +21,7 @@ const LoadFile = () => {
   const [documents, setDocuments] = useState([]);
   const [activeTab, setActiveTab] = useState('preview'); // 'preview' 或 'documents'
   const [selectedDoc, setSelectedDoc] = useState(null);
+  const [isImportingDefault, setIsImportingDefault] = useState(false);
 
   useEffect(() => {
     fetchDocuments();
@@ -96,6 +97,35 @@ const LoadFile = () => {
     } catch (error) {
       console.error('Error deleting document:', error);
       setStatus(`Error deleting document: ${error.message}`);
+    }
+  };
+
+  const handleLoadDefaultCourseQa = async () => {
+    setIsImportingDefault(true);
+    setStatus('Loading default course QA knowledge base...');
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/load-default-course-qa?overwrite=true`, {
+        method: 'POST'
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.detail || `HTTP error! status: ${response.status}`);
+      }
+
+      setLoadedContent(data.loaded_content);
+      setSelectedDoc({
+        name: 'courseqa_default_loaded.json'
+      });
+      setActiveTab('preview');
+      setStatus('Default course QA knowledge base loaded successfully!');
+      fetchDocuments();
+    } catch (error) {
+      console.error('Error loading default course QA:', error);
+      setStatus(`Error loading default course QA: ${error.message}`);
+    } finally {
+      setIsImportingDefault(false);
     }
   };
 
@@ -389,6 +419,14 @@ const LoadFile = () => {
               disabled={!file}
             >
               文档读入
+            </button>
+
+            <button
+              onClick={handleLoadDefaultCourseQa}
+              className="mt-3 w-full px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:bg-emerald-300"
+              disabled={isImportingDefault}
+            >
+              {isImportingDefault ? '导入默认知识库中...' : '加载默认课程 QA 知识库'}
             </button>
           </div>
 

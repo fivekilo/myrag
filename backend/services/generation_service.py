@@ -7,15 +7,38 @@ import json
 from datetime import datetime
 from typing import List, Dict, Optional
 import logging
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-import torch
-from openai import OpenAI
+import time
 import requests
 from utils.model_utils import get_huggingface_model_path
 from utils.paths import GENERATION_RESULTS_DIR, workspace_relative
-from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
-from langchain_core.prompts import ChatPromptTemplate
-import time
+
+try:
+    import torch
+except Exception:  # pragma: no cover - optional dependency at runtime
+    torch = None
+
+try:
+    from openai import OpenAI
+except Exception:  # pragma: no cover - optional dependency at runtime
+    OpenAI = None
+
+try:
+    from langchain_core.prompts import ChatPromptTemplate
+except Exception:  # pragma: no cover - optional dependency at runtime
+    ChatPromptTemplate = None
+
+try:
+    from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+except Exception:  # pragma: no cover - optional dependency at runtime
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
+    pipeline = None
+
+try:
+    from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
+except Exception:  # pragma: no cover - optional dependency at runtime
+    ChatHuggingFace = None
+    HuggingFacePipeline = None
 
 # 设置环境变量以启用 Apple Silicon (MPS) 回退到 CPU (当遇到不支持的操作时会自动回退到 CPU 执行)
 # 目前 PyTorch 版本 ≥ 1.13 时，才支持 Apple 的 Metal Performance Shaders (MPS) ，而且暂不支持「多 GPU」，另外，部分训练操作尚未完全实现
@@ -46,7 +69,10 @@ class GenerationService:
             },
             "aliyun": {
                 "qwen-turbo": "qwen-turbo",
+                "qwen-plus": "qwen-plus",
                 "qwen3.6-plus": "qwen3.6-plus",
+                "qwen3.7-max": "qwen3.7-max",
+                "qwen3.7-max-2026-05-20": "qwen3.7-max-2026-05-20",
             },
             "deepseek": {
                 "deepseek-v4-flash": "deepseek-v4-flash",
@@ -71,6 +97,20 @@ class GenerationService:
             tokenizer: 对应的分词器
         """
         try:
+            if (
+                AutoModelForCausalLM is None
+                or AutoTokenizer is None
+                or pipeline is None
+                or ChatHuggingFace is None
+                or HuggingFacePipeline is None
+                or torch is None
+                or ChatPromptTemplate is None
+            ):
+                raise ImportError(
+                    "HuggingFace generation dependencies are not installed. "
+                    "Install torch, transformers, langchain_core, and langchain_huggingface to use local models."
+                )
+
             tensor_device = "cuda" if torch.cuda.is_available() else "cpu"
             model_name = self.models["huggingface"][model_name]
             model_name = get_huggingface_model_path(model_name)
@@ -183,7 +223,12 @@ AI回复：{responseInfo}
             raise
 
     def _generate_with_aliyun(
-        self, model_name: str, query: str, context: str, api_key: Optional[str] = None
+        self,
+        model_name: str,
+        query: str,
+        context: str,
+        api_key: Optional[str] = None,
+        show_reasoning: bool = True,
     ) -> str:
         """
         使用OpenAI API生成回答
@@ -198,14 +243,25 @@ AI回复：{responseInfo}
             生成的回答文本
         """
         try:
-            # 初始化OpenAI客户端
-            client = OpenAI(
-                # 如果没有配置环境变量，请用阿里云百炼API Key替换：api_key="sk-xxx"
-                api_key=os.getenv("DASHSCOPE_API_KEY"),
-                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            if OpenAI is None:
+                raise ImportError(
+                    "openai package is not installed. Install it to call Aliyun Bailian via compatible-mode."
+                )
+
+            resolved_api_key = api_key or os.getenv("ALIYUN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+            if not resolved_api_key:
+                raise ValueError("Aliyun Bailian API key not provided")
+
+            base_url = os.getenv(
+                "DASHSCOPE_BASE_URL",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
             )
 
-            # client = OpenAI(api_key=api_key)
+            # 初始化OpenAI客户端
+            client = OpenAI(
+                api_key=resolved_api_key,
+                base_url=base_url,
+            )
 
             messages = [
                 {
@@ -215,18 +271,20 @@ AI回复：{responseInfo}
                 {"role": "user", "content": f"Context: {context}\n\nQuestion: {query}"},
             ]
 
+            extra_body = {"enable_thinking": bool(show_reasoning)}
             completion = client.chat.completions.create(
                 model=self.models["aliyun"][model_name],
                 messages=messages,
-                # 通过 extra_body 设置 enable_thinking 开启思考模式
-                extra_body={"enable_thinking": True},
+                # 百炼官方文档当前仍建议通过 extra_body 传入 enable_thinking。
+                extra_body=extra_body,
                 stream=True,
                 stream_options={"include_usage": True},
             )
             reasoning_content = ""  # 完整思考过程
             answer_content = ""  # 完整回复
             is_answering = False  # 是否进入回复阶段
-            print("\n" + "=" * 20 + "思考过程" + "=" * 20 + "\n")
+            if show_reasoning:
+                print("\n" + "=" * 20 + "思考过程" + "=" * 20 + "\n")
 
             for chunk in completion:
                 if not chunk.choices:
@@ -241,7 +299,7 @@ AI回复：{responseInfo}
                     hasattr(delta, "reasoning_content")
                     and delta.reasoning_content is not None
                 ):
-                    if not is_answering:
+                    if show_reasoning and not is_answering:
                         print(delta.reasoning_content, end="", flush=True)
                     reasoning_content += delta.reasoning_content
 
@@ -252,10 +310,13 @@ AI回复：{responseInfo}
                         is_answering = True
                     print(delta.content, end="", flush=True)
                     answer_content += delta.content
-            return answer_content.strip()
+            final_answer = answer_content.strip()
+            if show_reasoning and reasoning_content.strip():
+                return f"【思维过程】\n{reasoning_content.strip()}\n\n【最终答案】\n{final_answer}"
+            return final_answer
 
         except Exception as e:
-            logger.error(f"Error generating with OpenAI: {str(e)}")
+            logger.error(f"Error generating with Aliyun Bailian: {str(e)}")
             raise
 
     def _generate_with_deepseek(
@@ -280,6 +341,9 @@ AI回复：{responseInfo}
             生成的回答文本，对于推理模型可能包含思维过程
         """
         try:
+            if OpenAI is None:
+                raise ImportError("openai package is not installed. Install it to call DeepSeek APIs.")
+
             if not api_key:
                 api_key = os.getenv("DEEPSEEK_API_KEY")
                 if not api_key:
@@ -351,7 +415,7 @@ AI回复：{responseInfo}
         try:
             if provider == "aliyun":
                 critique = self._generate_with_aliyun(
-                    model_name, prompt, "[NO CONTEXT NEEDED]", api_key
+                    model_name, prompt, "[NO CONTEXT NEEDED]", api_key, show_reasoning=False
                 )
             elif provider == "deepseek":
                 critique = self._generate_with_deepseek(
@@ -421,7 +485,7 @@ AI回复：{responseInfo}
                 )
             elif provider == "aliyun":
                 response = self._generate_with_aliyun(
-                    model_name, query, context, api_key
+                    model_name, query, context, api_key, show_reasoning
                 )
             elif provider == "deepseek":
                 response = self._generate_with_deepseek(

@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from services.loading_service import LoadingService
 from services.chunking_service import ChunkingService
 from services.parsing_service import ParsingService
+from services.course_qa_import_service import CourseQaImportService
 import logging
 from enum import Enum
 from utils.config import VectorDBProvider
@@ -52,6 +53,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def ensure_default_course_qa_loaded() -> None:
+    """Ensure the default course QA dataset is available as a loaded document."""
+    importer = CourseQaImportService()
+    if not importer.source_path.exists():
+        logger.info(
+            "Default course QA source not found, skipping auto import: %s",
+            importer.source_path,
+        )
+        return
+    importer.ensure_default_loaded_document(overwrite=False)
+
+
+@app.on_event("startup")
+async def startup_event():
+    ensure_default_course_qa_loaded()
 
 @app.post("/process")
 async def process_file(
@@ -723,6 +741,31 @@ async def load_file(
     except Exception as e:
         logger.error(f"Error loading file: {str(e)}")
         raise
+
+
+@app.post("/load-default-course-qa")
+async def load_default_course_qa(overwrite: bool = Query(False)):
+    try:
+        importer = CourseQaImportService()
+        if not importer.source_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Default course QA source not found: {workspace_relative(importer.source_path)}",
+            )
+
+        document_data = importer.ensure_default_loaded_document(overwrite=overwrite)
+        output_path = importer.output_dir / importer.output_name
+        return {
+            "status": "success",
+            "message": "Default course QA knowledge base loaded successfully",
+            "loaded_content": document_data,
+            "filepath": workspace_relative(output_path),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading default course QA dataset: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/chunk")
