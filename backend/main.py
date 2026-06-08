@@ -31,6 +31,7 @@ from utils.paths import (
     TEMP_DIR,
     ensure_runtime_dirs,
     workspace_relative,
+    VECTOR_STORE_DIR,  # 【新增导入：用于定位 FAISS 路径】
 )
 
 # 设置日志
@@ -295,6 +296,11 @@ async def get_providers():
 
         search_service = SearchService()
         providers = search_service.get_providers()
+
+        # 【新增：动态追加 FAISS】
+        if isinstance(providers, list) and not any(p.get("id") == "faiss" for p in providers):
+            providers.append({"id": "faiss", "name": "FAISS (Local)"})
+
         return {"providers": providers}
     except Exception as e:
         logger.error(f"Error getting providers: {str(e)}")
@@ -303,15 +309,17 @@ async def get_providers():
 
 @app.get("/collections")
 async def get_collections(
-    # provider: VectorDBProvider = Query(default=VectorDBProvider.MILVUS)
-    provider: VectorDBProvider = Query(default=VectorDBProvider.CHROMA),
+    # 将参数类型由 VectorDBProvider 改为 str，防止 Enum 未定义时报错
+    provider: str = Query(default="chroma"),
 ):
     """获取指定向量数据库中的集合"""
     try:
+
         from services.search_service import SearchService
 
         search_service = SearchService()
-        collections = search_service.list_collections(provider.value)
+        # 【修改此处】直接传入 provider 变量即可，去掉后面的 .value
+        collections = search_service.list_collections(provider)
         return {"collections": collections}
     except Exception as e:
         logger.error(f"Error getting collections: {str(e)}")

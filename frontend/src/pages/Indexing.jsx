@@ -20,7 +20,7 @@ const Indexing = () => {
     qdrant: { modes: ['hnsw', 'custom'] },
     weaviate: { modes: ['hnsw', 'flat'] },
     chroma: { modes: ['hnsw', 'standard'] },
-    faiss: { modes: ['flat', 'ivf', 'hnsw'] }
+    faiss: { modes: ['flat', 'ivf_flat', 'hnsw'] } // 【修改此处：ivf -> ivf_flat】
   };
 
   useEffect(() => {

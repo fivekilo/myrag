@@ -13,6 +13,8 @@ from pymilvus import MilvusClient, exceptions
 import chromadb
 import re
 from utils.paths import VECTOR_STORE_DIR, CHROMADB_DIR
+import faiss
+import numpy as np
 
 chromadb_path = str(CHROMADB_DIR)
 logger = logging.getLogger(__name__)
@@ -121,6 +123,9 @@ class VectorDBConfig:
         self.index_mode = index_mode
         self.milvus_uri = MILVUS_CONFIG["uri"]
         self.chromadb_uri = chromadb_path
+        # 新增 FAISS 路径配置
+        self.faiss_dir = VECTOR_STORE_DIR / "faiss"
+        self.faiss_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_milvus_index_type(self, index_mode: str) -> str:
         """
@@ -219,6 +224,9 @@ class VectorStoreService:
 
         if config.provider == VectorDBProvider.CHROMA:
             result = self._index_to_chroma(embeddings_data, config)
+
+        if config.provider == VectorDBProvider.FAISS:  # 新增 FAISS 分支
+            result = self._index_to_faiss(embeddings_data, config)
 
         end_time = datetime.now()
         processing_time = (end_time - start_time).total_seconds()
@@ -532,6 +540,79 @@ class VectorStoreService:
         # finally:
         #     connections.disconnect("default")
 
+    def _index_to_faiss(
+            self, embeddings_data: Dict[str, Any], config: VectorDBConfig
+    ) -> Dict[str, Any]:
+        """
+        将嵌入向量索引到本地 FAISS 数据库
+        """
+        try:
+            filename = embeddings_data.get("filename", "")
+            embedding_provider = embeddings_data.get("embedding_provider", "unknown")
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            collection_name = build_collection_name(
+                filename, embedding_provider, timestamp, max_length=63
+            )
+
+            # 准备向量数据
+            embeddings_list = []
+            metadata_list = []
+
+            for emb in embeddings_data["embeddings"]:
+                embeddings_list.append(emb.get("embedding", []))
+                # 记录每一个向量对应的文本元数据
+                entity = {
+                    "content": str(emb["metadata"].get("content", "")),
+                    "document_name": embeddings_data.get("filename", ""),
+                    "chunk_id": int(emb["metadata"].get("chunk_id", 0)),
+                    "total_chunks": int(emb["metadata"].get("total_chunks", 0)),
+                    "page_number": str(emb["metadata"].get("page_number", 0)),
+                    "page_range": str(emb["metadata"].get("page_range", "")),
+                }
+                metadata_list.append(entity)
+
+            xb = np.array(embeddings_list).astype('float32')
+            vector_dim = xb.shape[1]
+
+            # 根据选中的索引模式创建不同的 FAISS 索引
+            index_mode = config.index_mode.upper()
+            if index_mode == "FLAT":
+                index = faiss.IndexFlatL2(vector_dim)
+            elif index_mode == "IVF_FLAT":
+                nlist = min(100, len(xb))  # 聚类中心数量
+                quantizer = faiss.IndexFlatL2(vector_dim)
+                index = faiss.IndexIVFFlat(quantizer, vector_dim, nlist, faiss.METRIC_L2)
+                index.train(xb)  # IVF 索引需要训练
+            elif index_mode == "HNSW":
+                M = 32  # 邻居数量
+                index = faiss.IndexHNSWFlat(vector_dim, M)
+            else:
+                logger.warning(f"Unknown FAISS index mode {index_mode}, fallback to FLAT")
+                index = faiss.IndexFlatL2(vector_dim)
+
+            # 添加向量到索引
+            index.add(xb)
+
+            # 创建本地存储路径
+            faiss_dir = VECTOR_STORE_DIR / "faiss"
+            faiss_dir.mkdir(parents=True, exist_ok=True)
+
+            # 1. 写入物理索引文件
+            index_file_path = faiss_dir / f"{collection_name}.index"
+            faiss.write_index(index, str(index_file_path))
+
+            # 2. 写入对应的元数据JSON文件
+            metadata_file_path = faiss_dir / f"{collection_name}_metadata.json"
+            with open(metadata_file_path, "w", encoding="utf-8") as f:
+                json.dump(metadata_list, f, ensure_ascii=False, indent=4)
+
+            logger.info(f"Successfully created FAISS collection: {collection_name} with mode {index_mode}")
+            return {"index_size": len(xb), "collection_name": collection_name}
+
+        except Exception as e:
+            logger.error(f"Error indexing to FAISS: {str(e)}")
+            raise
+
     def list_collections(self, provider: str) -> List[str]:
         """
         列出指定提供商的所有集合
@@ -553,6 +634,13 @@ class VectorStoreService:
         if provider == VectorDBProvider.CHROMA:
             collections = self.client.list_collections()
             return collections
+
+        if provider == VectorDBProvider.FAISS:  # 新增 FAISS 扫描
+            faiss_dir = VECTOR_STORE_DIR / "faiss"
+            if not faiss_dir.exists():
+                return []
+            # 获取所有 .index 文件名
+            return [f.stem for f in faiss_dir.glob("*.index")]
 
         return []
 
@@ -580,6 +668,19 @@ class VectorStoreService:
                 return True
             finally:
                 logger.info("after delete collection")
+        elif provider == VectorDBProvider.FAISS:  # 新增 FAISS 删除
+            try:
+                faiss_dir = VECTOR_STORE_DIR / "faiss"
+                index_file = faiss_dir / f"{collection_name}.index"
+                meta_file = faiss_dir / f"{collection_name}_metadata.json"
+                if index_file.exists():
+                    index_file.unlink()
+                if meta_file.exists():
+                    meta_file.unlink()
+                return True
+            except Exception as e:
+                logger.error(f"FAISS delete error: {e}")
+                return False
         return False
 
     def get_collection_info(
@@ -623,5 +724,25 @@ class VectorStoreService:
                 }
             finally:
                 logger.info("after get collection info")
+                # 【新增：FAISS 集合信息读取逻辑】
+        elif provider == VectorDBProvider.FAISS or provider == "faiss":
+            try:
+                faiss_dir = VECTOR_STORE_DIR / "faiss"
+                meta_file = faiss_dir / f"{collection_name}_metadata.json"
+
+                if meta_file.exists():
+                    with open(meta_file, "r", encoding="utf-8") as f:
+                        meta_data = json.load(f)
+                    return {
+                        "name": collection_name,
+                        "num_entities": len(meta_data),  # 元数据数组的长度就是向量总数
+                        "schema": meta_data[0] if meta_data else {},  # 返回第一个向量的元数据作为 Schema 示例
+                        "processing_time": 0.0  # 占位符
+                    }
+                else:
+                    logger.error(f"FAISS metadata file not found: {meta_file}")
+            except Exception as e:
+                logger.error(f"Error getting FAISS collection info: {str(e)}")
+                raise
 
         return {}

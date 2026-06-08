@@ -9,7 +9,7 @@ import os
 import json
 from pymilvus import MilvusClient, exceptions
 import chromadb
-from utils.paths import CHROMADB_DIR, SEARCH_RESULTS_DIR, workspace_relative
+from utils.paths import CHROMADB_DIR, SEARCH_RESULTS_DIR, workspace_relative,VECTOR_STORE_DIR
 
 chromadb_path = str(CHROMADB_DIR)
 
@@ -79,7 +79,8 @@ class SearchService:
         """
         return [
             #     {"id": VectorDBProvider.MILVUS.value, "name": "Milvus"}
-            {"id": VectorDBProvider.CHROMA.value, "name": "chroma"}
+            {"id": VectorDBProvider.CHROMA.value, "name": "chroma"},
+            {"id": "faiss", "name": "FAISS (Local)"}  # 增加本地 FAISS 服务
         ]
 
     def list_collections(self, provider: str = VectorDBProvider.CHROMA.value) -> List[Dict[str, Any]]:
@@ -102,6 +103,30 @@ class SearchService:
             #     db_name=self.milvus_uri
             # )
             logger.info(f"into list collection")
+
+            # 【新增：对 FAISS 提供商进行本地磁盘扫描】
+            if provider == "faiss":
+                faiss_dir = VECTOR_STORE_DIR / "faiss"
+                if not faiss_dir.exists():
+                    return []
+                collections = []
+                for f in faiss_dir.glob("*.index"):
+                    name = f.stem
+                    meta_file = faiss_dir / f"{name}_metadata.json"
+                    count = 0
+                    if meta_file.exists():
+                        try:
+                            with open(meta_file, "r", encoding="utf-8") as meta_f:
+                                meta_data = json.load(meta_f)
+                                count = len(meta_data)
+                        except Exception as e:
+                            logger.error(f"Error reading FAISS metadata: {e}")
+                    collections.append({
+                        "id": name,
+                        "name": name,
+                        "count": count
+                    })
+                return collections
 
             collections = []
             collection_names = self.client.list_collections()
@@ -206,6 +231,89 @@ class SearchService:
 
             logger.info(
                 f"Starting search with parameters - Collection: {collection_id}, Query: {query}, Top K: {top_k}")
+
+            # 【新增：本地 FAISS 检索分支】
+            faiss_index_path = VECTOR_STORE_DIR / "faiss" / f"{collection_id}.index"
+            if faiss_index_path.exists():
+                logger.info(f"FAISS index file found, executing native FAISS search in SearchService.")
+                import faiss
+                import numpy as np
+
+                # 1. 载入本地 FAISS 集合的元数据文件
+                meta_file_path = VECTOR_STORE_DIR / "faiss" / f"{collection_id}_metadata.json"
+                if not meta_file_path.exists():
+                    raise ValueError(f"FAISS metadata not found for {collection_id}")
+                with open(meta_file_path, "r", encoding="utf-8") as f:
+                    meta_data = json.load(f)
+
+                # 自动提取该集合创建时的 Embedding 配置
+                first_meta = meta_data[0] if meta_data else {}
+                provider = first_meta.get("embedding_provider", "huggingface")
+                model = first_meta.get("embedding_model", "BAAI/bge-small-zh-v1.5")
+
+                # 2. 【核心优化：完美复用服务内已有的多查询扩展（Multi-query Expansion）逻辑】
+                queries = self._expand_query(query)
+                logger.info(f"FAISS Multi-query expansion variants: {queries}")
+
+                # 3. 读取本地物理索引
+                index = faiss.read_index(str(faiss_index_path))
+                processed_results = []
+                seen_chunk_ids = set()
+
+                # 4. 对多路扩展后的 Query 分别检索、去重和合并
+                for expanded_query in queries:
+                    query_embedding = self.embedding_service.create_single_embedding(
+                        expanded_query,
+                        provider=provider,
+                        model=model
+                    )
+                    xq = np.array([query_embedding]).astype('float32')
+                    D, I = index.search(xq, top_k)
+
+                    for dist, idx in zip(D[0], I[0]):
+                        if idx == -1:
+                            continue
+
+                        # 还原余弦相似度（由于 BGE 向量本身已经 L2 归一化，公式为 1 - d/2）
+                        hit_score = 1.0 - float(dist) / 2.0
+                        if hit_score >= threshold and idx not in seen_chunk_ids:
+                            seen_chunk_ids.add(idx)
+                            item = meta_data[idx]
+                            content = item.get("content", "")
+
+                            processed_results.append({
+                                "text": content,
+                                "score": float(hit_score),
+                                "metadata": {
+                                    "source": item.get("document_name"),
+                                    "page": item.get("page_number"),
+                                    "chunk": idx,
+                                    "total_chunks": item.get("total_chunks"),
+                                    "page_range": item.get("page_range"),
+                                    "embedding_provider": provider,
+                                    "embedding_model": model,
+                                    "embedding_timestamp": item.get("embedding_timestamp")
+                                }
+                            })
+
+                # 5. 全局相似度重排，并截取最相关的 Top K
+                processed_results.sort(key=lambda item: item["score"], reverse=True)
+                processed_results = processed_results[:top_k]
+
+                response_data = {"results": processed_results}
+
+                # 6. 完美复用结果保存逻辑
+                if save_results:
+                    logger.info("Save results is True, saving FAISS search results...")
+                    if processed_results:
+                        try:
+                            filepath = self.save_search_results(query, collection_id, processed_results)
+                            response_data["saved_filepath"] = filepath
+                        except Exception as e:
+                            logger.error(f"Error saving FAISS search results: {str(e)}")
+                            response_data["save_error"] = str(e)
+
+                return response_data
 
             # 连接到 Chroma
             # 获取collection
