@@ -1,5 +1,6 @@
 from datetime import datetime
 import logging
+import re
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
@@ -30,7 +31,7 @@ class ChunkingService:
                         "chunk_id": len(chunks) + 1,
                         "page_number": page_data["page"],
                         "page_range": str(page_data["page"]),
-                        "word_count": len(page_data["text"].split()),
+                        "word_count": self._estimate_word_count(page_data["text"]),
                     }
                     chunks.append({"content": page_data["text"], "metadata": chunk_metadata})
 
@@ -42,7 +43,7 @@ class ChunkingService:
                             "chunk_id": len(chunks) + 1,
                             "page_number": page_data["page"],
                             "page_range": str(page_data["page"]),
-                            "word_count": len(chunk["text"].split()),
+                            "word_count": self._estimate_word_count(chunk["text"]),
                         }
                         chunks.append({"content": chunk["text"], "metadata": chunk_metadata})
 
@@ -57,7 +58,7 @@ class ChunkingService:
                             "chunk_id": len(chunks) + 1,
                             "page_number": page_data["page"],
                             "page_range": str(page_data["page"]),
-                            "word_count": len(chunk["text"].split()),
+                            "word_count": self._estimate_word_count(chunk["text"]),
                         }
                         chunks.append({"content": chunk["text"], "metadata": chunk_metadata})
             else:
@@ -151,7 +152,7 @@ class ChunkingService:
                 "chunk_id": len(chunks) + 1,
                 "page_number": page,
                 "page_range": str(page),
-                "word_count": len(chunk_content.split()),
+                "word_count": self._estimate_word_count(chunk_content),
                 "block_type": block_type,
                 "section_title": current_title,
                 "section_path": block.get("section_path", []),
@@ -202,11 +203,14 @@ class ChunkingService:
             if block.get("page"):
                 section["pages"].add(block["page"])
             section["block_types"].add(block_type)
+            source_method = block.get("source_method")
+            if source_method:
+                section.setdefault("source_methods", set()).add(source_method)
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=150,
-            separators=["\n\n", "\n", ". ", " "],
+            separators=["\n\n", "\n", "。", "！", "？", "；", ". ", "! ", "? ", " "],
         )
 
         for section in sections.values():
@@ -215,6 +219,7 @@ class ChunkingService:
                 continue
             section_title = section["section_path"][-1] if section["section_path"] else None
             page_numbers = sorted(section["pages"])
+            source_methods = sorted(section.get("source_methods", set()))
             page_range = (
                 f"{page_numbers[0]}-{page_numbers[-1]}" if len(page_numbers) > 1 else str(page_numbers[0])
             ) if page_numbers else "N/A"
@@ -232,12 +237,12 @@ class ChunkingService:
                             "chunk_id": len(chunks) + 1,
                             "page_number": page_numbers[0] if page_numbers else None,
                             "page_range": page_range,
-                            "word_count": len(piece_content.split()),
+                            "word_count": self._estimate_word_count(piece_content),
                             "block_type": "section",
                             "section_title": section_title,
                             "section_path": section["section_path"],
                             "document_title": document_title,
-                            "source_method": "pymupdf",
+                            "source_method": source_methods[0] if len(source_methods) == 1 else source_methods,
                             "contains_tables": "table" in section["block_types"],
                         },
                     }
@@ -246,23 +251,17 @@ class ChunkingService:
         return chunks
 
     def _fixed_size_chunks(self, text: str, chunk_size: int) -> list[dict]:
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=0,
+            separators=["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", " ", ""],
+            length_function=len,
+        )
         chunks = []
-        words = text.split()
-        current_chunk = []
-        current_length = 0
-
-        for word in words:
-            word_length = len(word) + (1 if current_length > 0 else 0)
-            if current_length + word_length > chunk_size and current_chunk:
-                chunks.append({"text": " ".join(current_chunk)})
-                current_chunk = []
-                current_length = 0
-            current_chunk.append(word)
-            current_length += word_length
-
-        if current_chunk:
-            chunks.append({"text": " ".join(current_chunk)})
-
+        for piece in splitter.split_text(text):
+            cleaned = piece.strip()
+            if cleaned and self._estimate_word_count(cleaned) > 0:
+                chunks.append({"text": cleaned})
         return chunks
 
     def _paragraph_chunks(self, text: str) -> list[dict]:
@@ -270,10 +269,31 @@ class ChunkingService:
         return [{"text": para} for para in paragraphs]
 
     def _sentence_chunks(self, text: str) -> list[dict]:
-        splitter = RecursiveCharacterTextSplitter(
+        sentence_candidates = re.split(r"(?<=[。！？；.!?])\s*", text or "")
+        sentences = []
+        overflow_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
-            separators=[".", "!", "?", "\n", " "],
+            separators=["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", " ", ""],
+            length_function=len,
         )
-        texts = splitter.split_text(text)
-        return [{"text": t} for t in texts]
+
+        for candidate in sentence_candidates:
+            cleaned = candidate.strip()
+            if not cleaned:
+                continue
+            if len(cleaned) <= 1000:
+                if self._estimate_word_count(cleaned) > 0:
+                    sentences.append({"text": cleaned})
+                continue
+
+            for piece in overflow_splitter.split_text(cleaned):
+                piece = piece.strip()
+                if piece and self._estimate_word_count(piece) > 0:
+                    sentences.append({"text": piece})
+
+        return sentences
+
+    def _estimate_word_count(self, text: str) -> int:
+        tokens = re.findall(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+", text or "")
+        return len(tokens)

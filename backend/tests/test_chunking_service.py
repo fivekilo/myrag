@@ -108,6 +108,76 @@ class ChunkingServiceTests(unittest.TestCase):
         self.assertIn("First method paragraph.", chunk["content"])
         self.assertIn("Second method paragraph on the next page.", chunk["content"])
 
+    def test_fixed_size_chunks_split_chinese_text_by_character_budget(self):
+        page_map = [
+            {
+                "page": 1,
+                "text": "自然语言处理帮助计算机理解语言。中文文本没有空格也应该被稳定切分。",
+            }
+        ]
+
+        result = self.service.chunk_text(
+            text="",
+            method="fixed_size",
+            metadata={"filename": "courseqa.pdf", "loading_method": "course_qa_json"},
+            page_map=page_map,
+            chunk_size=12,
+        )
+
+        self.assertGreater(result["total_chunks"], 1)
+        self.assertTrue(all(chunk["metadata"]["word_count"] > 0 for chunk in result["chunks"]))
+
+    def test_sentence_chunks_split_chinese_sentences(self):
+        page_map = [
+            {
+                "page": 1,
+                "text": "什么是自然语言处理？它研究语言理解。它也支持生成任务！",
+            }
+        ]
+
+        result = self.service.chunk_text(
+            text="",
+            method="by_sentences",
+            metadata={"filename": "courseqa.pdf", "loading_method": "course_qa_json"},
+            page_map=page_map,
+        )
+
+        self.assertGreaterEqual(result["total_chunks"], 2)
+        self.assertTrue(any("什么是自然语言处理" in chunk["content"] for chunk in result["chunks"]))
+
+    def test_chunk_by_sections_preserves_source_method(self):
+        blocks = [
+            {
+                "page": 1,
+                "type": "title",
+                "text": "Paper Title",
+                "title_role": "document_title",
+                "section_path": [],
+            },
+            {
+                "page": 1,
+                "type": "title",
+                "text": "1 Introduction",
+                "section_path": ["1 Introduction"],
+            },
+            {
+                "page": 1,
+                "type": "paragraph",
+                "text": "Structured parsing content.",
+                "section_path": ["1 Introduction"],
+                "source_method": "unstructured",
+            },
+        ]
+
+        result = self.service.chunk_structured_blocks(
+            blocks,
+            "by_sections",
+            self.metadata,
+            chunk_size=500,
+        )
+
+        self.assertEqual(result["chunks"][0]["metadata"]["source_method"], "unstructured")
+
 
 if __name__ == "__main__":
     unittest.main()
